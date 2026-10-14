@@ -1,0 +1,28 @@
+{
+  "_comment": "Copy to targets.json (or pass --targets FILE). A target in this file replaces a built-in preset of the same name. Run `python -m dnsloadforge targets` to see everything that is available.",
+  "targets": [
+    {
+      "name": "Office DNS filter",
+      "server": "10.0.0.53",
+      "port": 53,
+      "kind": "appliance",
+      "notes": "A filter in front of your own network: internal names such as corp.local are expected to resolve, and every block category is expected to be blocked."
+    },
+    {
+      "name": "Cloud filter trial (malware + phishing only)",
+      "server": "203.0.113.10",
+      "kind": "public",
+      "blocks": ["block_malware", "block_phishing"],
+      "sinkhole_ips": ["203.0.113.250"],
+      "sinkhole_cidrs": ["203.0.113.0/28"],
+      "notes": "kind=public: NXDOMAIN for internal names is not a failure, and load above 100 qps needs --allow-public-target. 'blocks' lists what this policy should block; the other block categories are still sent but never judged. sinkhole_* are the addresses its block page uses -- find them by querying a known-bad name. These addresses are documentation placeholders (RFC 5737)."
+    },
+    {
+      "name": "Unfiltered baseline",
+      "server": "10.0.0.1",
+      "kind": "appliance",
+      "blocks": [],
+      "notes": "blocks=[] means nothing is expected to be blocked: use it as a control to see what an unfiltered resolver looks like on the same traffic."
+    }
+  ]
+}

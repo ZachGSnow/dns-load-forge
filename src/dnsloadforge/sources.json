@@ -1,0 +1,115 @@
+{
+  "version": 2,
+  "_comment": "Domain list sources for DNS Load Forge. Data-driven so a dead or retired list is a one-line edit instead of a code change. 'format' selects the parser: hosts (0.0.0.0/127.0.0.1 domain), plain (one domain per line, may include ABP ||domain^ lines), rank_csv (popularity list, e.g. 'rank,domain'; a header row is detected). 'tier' is documentation for operators: primary lists are the ones the default mixture leans on, secondary lists add volume. 'ranked' marks a list whose order encodes popularity, which drives sampling weights and which end of the list survives --max-per-category. Verified reachable 2026-10-12.",
+  "_why_blocklistproject": "A domain is only ever one category, so when two sources disagree the highest-precedence category wins and the other loses the domain. That makes SUPERSET lists actively harmful here: StevenBlack's 'alternates/*' files are the base list plus extensions, so using one for adult content silently reclassified every ad domain (72,526 of them) as adult and emptied block_ads entirely. The Block List Project publishes single-topic lists, so each category stays its own.",
+  "sources": [
+    {
+      "slug": "blocklistproject-ads",
+      "category": "block_ads",
+      "url": "https://blocklistproject.github.io/Lists/ads.txt",
+      "format": "plain",
+      "tier": "primary",
+      "ranked": false,
+      "description": "Block List Project: advertising domains, single-topic. The bulk of what a filter should block and what users notice least when it does."
+    },
+    {
+      "slug": "stevenblack-unified",
+      "category": "block_ads",
+      "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+      "format": "hosts",
+      "tier": "primary",
+      "ranked": false,
+      "description": "StevenBlack unified hosts (ads + malware + tracking). The single most widely deployed host blocklist; a filter appliance must at least match it. Its malware and phishing entries are reclassified into those categories during overlap resolution."
+    },
+    {
+      "slug": "urlhaus",
+      "category": "block_malware",
+      "url": "https://urlhaus.abuse.ch/downloads/hostfile/",
+      "format": "hosts",
+      "tier": "primary",
+      "ranked": false,
+      "description": "abuse.ch URLhaus malware distribution hosts. Fresh, high-confidence, and changes daily -- the best signal that the appliance is actually pulling threat intelligence."
+    },
+    {
+      "slug": "blocklistproject-malware",
+      "category": "block_malware",
+      "url": "https://blocklistproject.github.io/Lists/malware.txt",
+      "format": "plain",
+      "tier": "secondary",
+      "ranked": false,
+      "description": "Block List Project malware domains. Large; supplies volume behind the URLhaus head so a filter can be judged on recall, not just on today's headlines."
+    },
+    {
+      "slug": "phishing-army",
+      "category": "block_phishing",
+      "url": "https://phishing.army/download/phishing_army_blocklist_extended.txt",
+      "format": "plain",
+      "tier": "primary",
+      "ranked": false,
+      "description": "Phishing Army extended blocklist. Phishing domains are short-lived, so this doubles as a test of feed freshness."
+    },
+    {
+      "slug": "blocklistproject-phishing",
+      "category": "block_phishing",
+      "url": "https://blocklistproject.github.io/Lists/phishing.txt",
+      "format": "plain",
+      "tier": "secondary",
+      "ranked": false,
+      "description": "Block List Project phishing domains."
+    },
+    {
+      "slug": "blocklistproject-scam",
+      "category": "block_phishing",
+      "url": "https://blocklistproject.github.io/Lists/scam.txt",
+      "format": "plain",
+      "tier": "secondary",
+      "ranked": false,
+      "description": "Block List Project scam domains. Small, but these are the names real users click, so they belong in the phishing group."
+    },
+    {
+      "slug": "blocklistproject-porn",
+      "category": "block_adult",
+      "url": "https://blocklistproject.github.io/Lists/porn.txt",
+      "format": "plain",
+      "tier": "primary",
+      "ranked": false,
+      "description": "Block List Project adult content, single-topic. Content policy is usually enforced separately from security policy, so it is measured separately."
+    },
+    {
+      "slug": "blocklistproject-tracking",
+      "category": "borderline",
+      "url": "https://blocklistproject.github.io/Lists/tracking.txt",
+      "format": "plain",
+      "tier": "primary",
+      "ranked": false,
+      "description": "Block List Project tracking domains. These are the deliberate grey zone: blocking them is a policy choice, and over-blocking the CDNs and analytics that legitimate sites depend on is how a filter breaks a web application. Reported, never scored as a failure."
+    },
+    {
+      "slug": "umbrella-top1m",
+      "category": "allow_popular",
+      "url": "http://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip",
+      "format": "rank_csv",
+      "tier": "primary",
+      "ranked": true,
+      "description": "Cisco Umbrella top 1M. Rank order is the popularity signal that makes the traffic mix look like a real office instead of a uniform blender."
+    },
+    {
+      "slug": "tranco-top1m",
+      "category": "allow_popular",
+      "url": "https://tranco-list.eu/top-1m.csv.zip",
+      "format": "rank_csv",
+      "tier": "primary",
+      "ranked": true,
+      "description": "Tranco top 1M (research-oriented, aggregates several popularity sources, less commercial bias than Umbrella alone)."
+    },
+    {
+      "slug": "majestic-million",
+      "category": "allow_longtail",
+      "url": "https://downloads.majestic.com/majestic_million.csv",
+      "format": "rank_csv",
+      "tier": "primary",
+      "ranked": true,
+      "description": "Majestic Million. Used for the long tail of legitimate domains, which is where a filter with an over-broad pattern can cause surprising false positives."
+    }
+  ]
+}

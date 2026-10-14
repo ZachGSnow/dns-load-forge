@@ -1,0 +1,4 @@
+GlobalRank,Tld,Rank,Domain,TLD,RefSubNets,RefIPs,IDN_Domain,IDN_TLD,PrevGlobalRank,PrevTld,PrevRank
+1,com,1,google.com,com,1000,2000,0,0,1,com,1
+2,com,2,facebook.com,com,900,1800,0,0,2,com,2
+3,com,3,youtube.com,com,800,1600,0,0,3,com,3

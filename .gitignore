@@ -1,0 +1,49 @@
+# Fetched domain lists.  These are ~40 MB of third-party data that is trivially
+# re-fetched with `python -m dnsloadforge lists --refresh`, and committing them
+# would pin a stale snapshot of every list into history.  lists/.gitkeep ships the
+# directory.
+lists/cache/
+
+# Run artifacts: per-query record logs (a 60-second run at 10k qps is ~100 MB) and
+# any pktmon captures.  Both are evidence for one investigation, not source.
+runs/
+scripts/captures/
+*.etl
+*.pcapng
+*.pcap
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Your own target definitions (copy targets.example.json). Keep it out of a public repo:
+# it describes your network.
+/targets.json
+
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+
+# Local secrets (never committed)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store

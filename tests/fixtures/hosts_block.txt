@@ -1,0 +1,15 @@
+# StevenBlack-style hosts fixture for offline parser tests.
+# A comment containing a domain, should-not-be-parsed.com, must be ignored.
+0.0.0.0 ads.example-blocked.com
+127.0.0.1 tracker.example-blocked.com # inline trailing comment
+0.0.0.0 two.example-blocked.com also.example-blocked.com
+::1 v6.example-blocked.com
+0.0.0.0 1.2.3.4
+0.0.0.0 bad_label_ending_-
+0.0.0.0
+0.0.0.0 ads.example-blocked.com
+0.0.0.0 UPPER.Example-Blocked.COM
+0.0.0.0 has-path.example.com/x
+0.0.0.0 singlelabel
+0.0.0.0 _ldap._tcp.corp.local
+0.0.0.0 7.106.1.10.in-addr.arpa

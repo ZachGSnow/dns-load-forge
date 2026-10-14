@@ -1,0 +1,2226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<script>
+// Apply the saved theme before first paint so there is no flash of the default.
+(function () {
+  try {
+    var t = window.localStorage.getItem("dlf-theme");
+    if (t && /^[a-z-]+$/.test(t) && t !== "midnight") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) { /* storage blocked: default theme */ }
+})();
+</script>
+<title>DNS Load Forge - live operations</title>
+<!--
+  DNS Load Forge live dashboard.
+
+  One file, zero dependencies, no build step, no network calls to anywhere except
+  the tool's own origin.  Charting is hand-drawn on <canvas>.
+
+  Data contract: see the STATS SNAPSHOT SCHEMA block at the bottom of
+  src/dnsloadforge/spec.py.  Every field read by this page is listed in the
+  worker report; if you add a panel, add the field it consumes there too.
+
+  Endpoints consumed (all same-origin, relative):
+    GET  /api/stats              one snapshot
+    GET  /api/stream             SSE, event: stats, data: <snapshot>
+    POST /api/control            {"action":"start"|"stop"|"compare", "target":..., "targets":[...]}
+    GET  /api/targets            named targets and the active one
+    GET  /api/history            finished runs, for the comparison table
+    GET  /api/sources            list sources, their freshness and any running update
+    POST /api/sources/refresh    {"slugs":[...]} (all when omitted)
+    POST /api/sources/enabled    {"slug":..., "enabled":true|false}
+    GET  /api/lists              domain list inventory
+    GET  /api/run/export.{csv,jsonl,json}
+
+  Open with ?demo=1 to render against locally generated fake data (no backend).
+-->
+<style>
+  /* ---------------------------------------------------------------- theme
+     Every colour on the page comes from the tokens below.  A theme is one block
+     that redefines them; nothing else in the stylesheet or the chart code holds a
+     literal colour, so adding a theme is adding a block.  Derived tints use
+     color-mix() so they follow whichever palette is active.
+
+     Midnight is the default and lives in :root.  Each other theme was checked
+     for contrast: body and dim text at least 4.5:1 on both panel surfaces, and
+     status colours at least 4.5:1 so they stay legible as small table text. */
+  :root {
+    color-scheme: dark;
+    --bg: #0b0f14;
+    --panel: #121821;
+    --panel-2: #161e29;
+    --line: #223045;
+    --line-soft: #1a2432;
+    --fg: #dce6f2;
+    --fg-dim: #8fa2b8;
+    --fg-faint: #7088a0;
+    --accent: #4ea6ff;
+    --sent: #4ea6ff;
+    --recv: #3ddc84;
+    --timeout: #ffa726;
+    --fp: #ff3b6b;
+    --fn: #e879f9;
+    --ok: #3ddc84;
+    --warn: #ffb020;
+    --bad: #ff4d5e;
+    --unknown: #7b8ba0;
+    --p95: #7dd3fc;
+    --grid: #1a2432;
+    --grid-strong: #223045;
+    --axis-fp: #b57a8c;
+    --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  :root[data-theme="grove"] {
+    --bg: #1d2711;
+    --panel: #283618;
+    --panel-2: #314220;
+    --line: #4a5e2d;
+    --line-soft: #3a4d23;
+    --fg: #FEFAE0;
+    --fg-dim: #d2cfae;
+    --fg-faint: #a9ad8c;
+    --accent: #DDA15E;
+    --sent: #DDA15E;
+    --recv: #A9C46C;
+    --timeout: #E08A3C;
+    --fp: #FF8274;
+    --fn: #D9A8EA;
+    --ok: #A9C46C;
+    --warn: #DDA15E;
+    --bad: #FF8274;
+    --unknown: #a9ad8c;
+    --p95: #E9C088;
+    --grid: #34471f;
+    --grid-strong: #4a5e2d;
+    --axis-fp: #e8aea6;
+  }
+  :root[data-theme="tidal-ember"] {
+    --bg: #001219;
+    --panel: #04202b;
+    --panel-2: #082b38;
+    --line: #12495a;
+    --line-soft: #0b3342;
+    --fg: #F3EBCB;
+    --fg-dim: #B9D8CE;
+    --fg-faint: #7FB5AE;
+    --accent: #4CC3C4;
+    --sent: #2BB8BB;
+    --recv: #94D2BD;
+    --timeout: #EE9B00;
+    --fp: #FF6A47;
+    --fn: #E9D8A6;
+    --ok: #94D2BD;
+    --warn: #EE9B00;
+    --bad: #FF6A47;
+    --unknown: #7FB5AE;
+    --p95: #94D2BD;
+    --grid: #0b3342;
+    --grid-strong: #12495a;
+    --axis-fp: #e8a08c;
+  }
+  :root[data-theme="dusk"] {
+    --bg: #18233a;
+    --panel: #1f2d48;
+    --panel-2: #273856;
+    --line: #3c5379;
+    --line-soft: #2e4262;
+    --fg: #F6ECE8;
+    --fg-dim: #CBC1D2;
+    --fg-faint: #A99FBC;
+    --accent: #EAAC8B;
+    --sent: #86A8DA;
+    --recv: #7FD1AE;
+    --timeout: #EAAC8B;
+    --fp: #FF7E82;
+    --fn: #D2A6E3;
+    --ok: #7FD1AE;
+    --warn: #EAAC8B;
+    --bad: #FF7E82;
+    --unknown: #A99FBC;
+    --p95: #B3C8EA;
+    --grid: #2e4262;
+    --grid-strong: #3c5379;
+    --axis-fp: #e8a3a6;
+  }
+  :root[data-theme="ink-wheat"] {
+    --bg: #04151F;
+    --panel: #0a2429;
+    --panel-2: #103136;
+    --line: #215049;
+    --line-soft: #173f3d;
+    --fg: #EFD6AC;
+    --fg-dim: #CDB88F;
+    --fg-faint: #A5987B;
+    --accent: #F07A2A;
+    --sent: #62B8AE;
+    --recv: #9BD1A4;
+    --timeout: #E8A33D;
+    --fp: #FF5C7A;
+    --fn: #D58BB4;
+    --ok: #9BD1A4;
+    --warn: #E8A33D;
+    --bad: #FF5C7A;
+    --unknown: #A5987B;
+    --p95: #8ED0C7;
+    --grid: #173f3d;
+    --grid-strong: #215049;
+    --axis-fp: #ee93a6;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px/1.45 var(--sans);
+    padding: 12px;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ------------------------------------------------------------- layout */
+  .stack { display: flex; flex-direction: column; gap: 10px; max-width: 1800px; margin: 0 auto; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .panel-title {
+    font-size: 11px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    font-weight: 600;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
+  .panel-title .cap { letter-spacing: 0; text-transform: none; font-weight: 400; color: var(--fg-faint); font-size: 11px; }
+  .grid-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; }
+  .grid-2-even { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media (max-width: 1240px) {
+    .grid-2, .grid-2-even { grid-template-columns: 1fr; }
+  }
+
+  /* -------------------------------------------------------------- header */
+  #header { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: center; }
+  #header .brand { font-size: 15px; font-weight: 700; letter-spacing: .02em; }
+  #header .brand small { font-weight: 400; color: var(--fg-dim); font-size: 11px; margin-left: 6px; }
+  .kv { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .kv .k { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--fg-faint); }
+  .kv .v { font-family: var(--mono); font-size: 12px; color: var(--fg); }
+  #header .spacer { flex: 1 1 auto; }
+  .controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  button, .btn {
+    background: var(--panel-2);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 5px 11px;
+    font: 600 12px var(--sans);
+    cursor: pointer;
+  }
+  button:hover:not(:disabled), .btn:hover { border-color: var(--accent); text-decoration: none; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: color-mix(in srgb, var(--ok) 18%, var(--panel-2)); border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); color: var(--ok); }
+  button.danger { background: color-mix(in srgb, var(--bad) 18%, var(--panel-2)); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); color: var(--bad); }
+  button.small { padding: 2px 8px; font-size: 11px; }
+  select, input[type="number"] {
+    background: var(--panel-2);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font: 12px var(--sans);
+    max-width: 100%;
+  }
+  input[type="number"] { width: 84px; font-family: var(--mono); }
+  select:hover, input[type="number"]:hover { border-color: var(--accent); }
+  label.field { display: flex; flex-direction: column; gap: 1px; }
+  label.field > span { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--fg-faint); }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font: 700 11px var(--mono); letter-spacing: .06em; text-transform: uppercase;
+    padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--fg-dim);
+  }
+  .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .badge.running { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); background: color-mix(in srgb, var(--ok) 12%, var(--panel-2)); }
+  .badge.stopped, .badge.stopping, .badge.starting { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: color-mix(in srgb, var(--warn) 12%, var(--panel-2)); }
+  .badge.idle { color: var(--fg-dim); }
+  .badge.conn-connected { color: var(--ok); }
+  .badge.conn-polling { color: var(--warn); }
+  .badge.conn-reconnecting { color: var(--bad); }
+  .badge.conn-idle { color: var(--fg-faint); }
+  #control-msg { font-size: 11px; color: var(--fg-dim); min-height: 14px; }
+
+  /* ------------------------------------------------------------- verdict */
+  #verdict {
+    display: flex; align-items: center; gap: 14px;
+    border-left: 5px solid var(--unknown);
+    background: var(--panel-2);
+  }
+  #verdict .v-status {
+    font: 800 15px var(--sans); text-transform: uppercase; letter-spacing: .09em;
+    min-width: 130px; color: var(--unknown);
+  }
+  #verdict .v-note { color: var(--fg-dim); font-size: 12.5px; }
+  #verdict.v-filtering { border-left-color: var(--ok); }
+  #verdict.v-filtering .v-status { color: var(--ok); }
+  #verdict.v-baseline { border-left-color: var(--sent); }
+  #verdict.v-baseline .v-status { color: var(--sent); }
+  #verdict.v-passthrough { border-left-color: var(--bad); background: color-mix(in srgb, var(--bad) 9%, var(--panel-2)); }
+  #verdict.v-passthrough .v-status { color: var(--bad); }
+  #verdict.v-degraded { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 9%, var(--panel-2)); }
+  #verdict.v-degraded .v-status { color: var(--warn); }
+  #verdict.v-unknown, #verdict.v-idle { border-left-color: var(--unknown); }
+
+  /* --------------------------------------------------------------- cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr)); gap: 8px; }
+  .card { background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 7px; padding: 7px 9px; }
+  .card-value { font: 700 19px var(--mono); line-height: 1.15; color: var(--fg); }
+  .card-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-faint); margin-top: 2px; }
+  .card-value.good { color: var(--ok); }
+  .card-value.warn { color: var(--warn); }
+  .card-value.bad { color: var(--bad); }
+  .card-value.dim { color: var(--fg-dim); }
+  .card-value.fp { color: var(--fp); }
+  .card-value.fn { color: var(--fn); }
+
+  /* --------------------------------------------------------------- chart */
+  .chart-wrap { position: relative; width: 100%; height: 260px; }
+  .chart-wrap.short { height: 170px; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 6px; font-size: 11px; }
+  .legend .item { display: flex; align-items: center; gap: 6px; color: var(--fg-dim); }
+  .legend .swatch { width: 14px; height: 3px; border-radius: 2px; }
+  .legend .val { font-family: var(--mono); color: var(--fg); font-weight: 600; }
+  .legend .item.emph .val { color: var(--fp); }
+  .legend .item.emph-fn .val { color: var(--fn); }
+
+  /* --------------------------------------------------------------- table */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: right; padding: 4px 7px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--fg-faint); border-bottom: 1px solid var(--line); position: sticky; top: 0;
+    background: var(--panel); z-index: 1; font-weight: 600;
+  }
+  thead th.sortable { cursor: pointer; user-select: none; }
+  thead th.sortable:hover { color: var(--fg); }
+  thead th .arrow { opacity: .55; font-size: 9px; margin-left: 3px; }
+  tbody tr:hover td { background: color-mix(in srgb, var(--accent) 7%, var(--panel)); }
+  td.num, th.num { font-family: var(--mono); }
+  td.mono { font-family: var(--mono); }
+  td.left, th.left { text-align: left; }
+  .table-scroll { max-height: 330px; overflow: auto; }
+  .cell-bad { color: var(--bad); font-weight: 700; }
+  .cell-warn { color: var(--warn); font-weight: 600; }
+  .cell-ok { color: var(--ok); }
+  .cell-dim { color: var(--fg-faint); }
+  .cell-best { color: var(--ok); font-weight: 700; }
+  .empty { color: var(--fg-faint); font-style: italic; padding: 8px 2px; font-size: 12px; }
+  .empty.good { color: var(--ok); font-style: normal; }
+
+  /* --------------------------------------------------------------- chips */
+  .chip {
+    display: inline-block; padding: 1px 6px; border-radius: 4px;
+    font: 600 10.5px var(--mono); border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--fg-dim);
+  }
+  .chip.allow { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); background: color-mix(in srgb, var(--ok) 12%, var(--panel-2)); }
+  .chip.enterprise { color: var(--sent); border-color: color-mix(in srgb, var(--sent) 45%, var(--line)); background: color-mix(in srgb, var(--sent) 12%, var(--panel-2)); }
+  .chip.borderline { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: color-mix(in srgb, var(--warn) 12%, var(--panel-2)); }
+  .chip.block { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); background: color-mix(in srgb, var(--bad) 12%, var(--panel-2)); }
+  .chip.probe { color: var(--fg-dim); }
+  .chip.v-filtering { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+  .chip.v-baseline { color: var(--sent); border-color: color-mix(in srgb, var(--sent) 45%, var(--line)); }
+  .chip.v-passthrough { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+  .chip.v-degraded { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+  .chip.v-unknown, .chip.v-idle { color: var(--unknown); }
+  td.chip-cell { padding-top: 2px; padding-bottom: 2px; }
+  .out-allowed { color: var(--ok); }
+  .out-blocked { color: color-mix(in srgb, var(--bad) 70%, var(--fg)); }
+  .out-false_positive { color: var(--fp); font-weight: 700; }
+  .out-false_negative { color: var(--fn); font-weight: 700; }
+  .out-nxdomain { color: var(--fg-dim); }
+  .out-timeout { color: var(--warn); }
+  .out-error { color: var(--bad); }
+  .expect-allow { color: var(--ok); }
+  .expect-block { color: color-mix(in srgb, var(--bad) 70%, var(--fg)); }
+  .expect-unknown { color: var(--warn); }
+  .expect-nxdomain { color: var(--fg-dim); }
+
+  /* pass-rate bar */
+  .ratebar { position: relative; display: inline-block; min-width: 62px; text-align: right; font-family: var(--mono); }
+  .ratebar .bar { position: absolute; left: 0; top: 50%; transform: translateY(-50%); height: 4px; border-radius: 2px; background: var(--ok); opacity: .55; }
+  .ratebar .bar.low { background: var(--bad); }
+  .ratebar .txt { position: relative; }
+
+  /* -------------------------------------------------------------- rcode */
+  .rcode-row { display: grid; grid-template-columns: 92px 1fr 78px 52px; gap: 8px; align-items: center; margin-bottom: 4px; }
+  .rcode-name { font-family: var(--mono); font-size: 11px; color: var(--fg-dim); }
+  .rcode-name.key { color: var(--fg); font-weight: 600; }
+  .rcode-name.sentinel { color: var(--warn); }
+  .rcode-track { background: var(--panel-2); border-radius: 3px; height: 13px; overflow: hidden; }
+  .rcode-fill { height: 100%; border-radius: 3px; background: var(--sent); opacity: .8; }
+  .rcode-fill.noerror { background: var(--ok); }
+  .rcode-fill.nxdomain { background: var(--unknown); }
+  .rcode-fill.refused { background: var(--bad); }
+  .rcode-fill.servfail { background: var(--timeout); }
+  .rcode-fill.formerr, .rcode-fill.notimp { background: var(--fn); }
+  .rcode-fill.timeout { background: var(--warn); }
+  .rcode-fill.error { background: var(--fp); }
+  .rcode-count { font-family: var(--mono); font-size: 11px; text-align: right; }
+  .rcode-pct { font-family: var(--mono); font-size: 11px; text-align: right; color: var(--fg-faint); }
+  .rcode-divider { border-top: 1px dashed var(--line); margin: 7px 0; }
+
+  /* --------------------------------------------------------------- alert */
+  .alert-panel { border-color: color-mix(in srgb, var(--fp) 55%, var(--line)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--fp) 16%, transparent), 0 0 18px color-mix(in srgb, var(--fp) 10%, transparent); }
+  .alert-panel .panel-title { color: var(--fp); }
+  .alert-panel.fn { border-color: color-mix(in srgb, var(--fn) 55%, var(--line)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--fn) 14%, transparent), 0 0 18px color-mix(in srgb, var(--fn) 9%, transparent); }
+  .alert-panel.fn .panel-title { color: var(--fn); }
+  .count-pill {
+    font-family: var(--mono); font-size: 11px; font-weight: 700;
+    padding: 1px 7px; border-radius: 999px; background: var(--panel-2);
+    border: 1px solid var(--line); color: var(--fg-dim);
+  }
+  .count-pill.hot { color: var(--fp); background: color-mix(in srgb, var(--fp) 14%, var(--panel-2)); border-color: color-mix(in srgb, var(--fp) 50%, var(--line)); }
+  .count-pill.fn-hot { color: var(--fn); background: color-mix(in srgb, var(--fn) 14%, var(--panel-2)); border-color: color-mix(in srgb, var(--fn) 50%, var(--line)); }
+
+  /* ------------------------------------------------------------ compare */
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; margin-bottom: 8px; }
+  .target-picks { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pick {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--panel-2); font-size: 12px; cursor: pointer;
+  }
+  .pick:hover { border-color: var(--accent); }
+  .pick input { accent-color: var(--accent); margin: 0; }
+  .pick small { color: var(--fg-faint); font-family: var(--mono); font-size: 10.5px; }
+  .compare-note { color: var(--fg-dim); font-size: 12px; margin: 4px 0 8px; }
+
+  /* ------------------------------------------------------------ sources */
+  .progress { height: 5px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
+  .progress > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  .job-line { font-size: 12px; color: var(--fg-dim); min-height: 16px; }
+  .job-line.err { color: var(--bad); }
+  .src-desc { color: var(--fg-faint); font-size: 11px; white-space: normal; max-width: 460px; text-align: left; }
+  .src-off td { opacity: .55; }
+  .toggle { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+
+  /* -------------------------------------------------------------- lists */
+  .lists-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 6px; margin-bottom: 10px; }
+  .list-item { display: flex; justify-content: space-between; gap: 8px; padding: 4px 7px; background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 6px; }
+  .list-item .lname { font-size: 11.5px; }
+  .list-item .lcount { font-family: var(--mono); font-size: 11px; color: var(--fg-dim); }
+  .list-item .lsrc { font-size: 10px; color: var(--fg-faint); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  #overlay {
+    position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 78%, transparent);
+    display: flex; align-items: center; justify-content: center; z-index: 50;
+    font-size: 14px; color: var(--fg-dim); backdrop-filter: blur(1px);
+  }
+  #overlay.hidden { display: none; }
+  #overlay .box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 26px; text-align: center; }
+  #overlay .box b { color: var(--fg); display: block; margin-bottom: 4px; font-size: 15px; }
+  .demo-note { display: none; }
+  body.demo .demo-note { display: inline; color: var(--warn); font-weight: 600; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="stack">
+
+  <!-- ==================================================== 1. header bar -->
+  <div class="panel" id="header">
+    <div class="brand">DNS Load Forge<small>live operations<span class="demo-note"> · DEMO DATA</span></small></div>
+    <span class="badge idle" id="run-state"><span class="dot"></span><span class="txt">idle</span></span>
+    <div class="kv"><span class="k">Target</span><span class="v" id="h-server">-</span></div>
+    <div class="kv" id="h-plan-kv" hidden><span class="k">Comparison</span><span class="v" id="h-plan">-</span></div>
+    <div class="kv"><span class="k">Identity</span><span class="v" id="h-mode">-</span></div>
+    <div class="kv"><span class="k">Workers</span><span class="v" id="h-personas">-</span></div>
+    <div class="kv"><span class="k">Source IPs</span><span class="v" id="h-sourceips">-</span></div>
+    <div class="kv"><span class="k">Target qps</span><span class="v" id="h-qps">-</span></div>
+    <div class="kv"><span class="k">Elapsed</span><span class="v" id="h-elapsed">00:00:00</span></div>
+    <div class="kv"><span class="k">Seed</span><span class="v" id="h-seed">-</span></div>
+    <span class="spacer"></span>
+    <label class="field"><span>Theme</span>
+      <select id="theme-select" aria-label="Colour theme"></select>
+    </label>
+    <span class="badge conn-idle" id="conn-state"><span class="dot"></span><span class="txt">connecting</span></span>
+    <div class="controls">
+      <label class="field"><span>Test against</span>
+        <select id="target-select" aria-label="Target for the next run"><option value="">loading...</option></select>
+      </label>
+      <label class="field"><span>Queries/sec</span><input type="number" id="in-qps" min="1" step="1" aria-label="Queries per second"></label>
+      <label class="field"><span>Seconds (0 = until stopped)</span><input type="number" id="in-duration" min="0" step="1" aria-label="Duration in seconds"></label>
+      <button class="primary" id="btn-start">Start</button>
+      <button class="danger" id="btn-stop" disabled>Stop</button>
+    </div>
+    <div class="controls">
+      <a class="btn" id="dl-csv" href="/api/run/export.csv" download>CSV</a>
+      <a class="btn" id="dl-jsonl" href="/api/run/export.jsonl" download>JSONL</a>
+      <a class="btn" id="dl-json" href="/api/run/export.json" download>JSON</a>
+    </div>
+    <div id="control-msg" style="flex-basis:100%"></div>
+  </div>
+
+  <!-- ================================================== 2. verdict banner -->
+  <div class="panel" id="verdict">
+    <div class="v-status" id="verdict-status">idle</div>
+    <div class="v-note" id="verdict-note">No run has started yet.</div>
+  </div>
+
+  <!-- ============================================== 2b. compare targets -->
+  <div class="panel" id="compare-panel">
+    <div class="panel-title">
+      Compare targets
+      <span class="cap">identical seeded traffic sent to each target in turn</span>
+    </div>
+    <div class="toolbar">
+      <div class="target-picks" id="compare-picks" role="group" aria-label="Targets to compare"></div>
+      <label class="field"><span>Seconds each</span><input type="number" id="cmp-duration" min="10" step="10" value="60"></label>
+      <button class="primary" id="btn-compare">Run comparison</button>
+      <a class="btn" id="dl-compare" href="/api/history/export.json" download>Export JSON</a>
+    </div>
+    <div class="compare-note" id="compare-note">Tick two or more targets. Uses the queries/sec in the header.</div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Target</th><th class="left">Verdict</th>
+            <th class="num" title="Share of expected-block queries that were blocked">Blocked</th>
+            <th class="num" title="Expected-block queries that resolved">Leaked</th>
+            <th class="num" title="Share of expected-allow queries that were wrongly blocked">False block</th>
+            <th class="num">p50 ms</th><th class="num">p95 ms</th><th class="num">Loss</th><th class="num">Sent</th>
+          </tr>
+        </thead>
+        <tbody id="compare-body"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="compare-empty">No finished runs yet. Every run you complete appears here.</div>
+  </div>
+
+  <!-- ===================================================== 3. status cards -->
+  <div class="panel">
+    <div class="panel-title">Throughput and health <span class="cap" id="cards-cap"></span></div>
+    <div class="cards" id="cards"></div>
+    <div class="panel-title" style="margin-top:10px">Query outcomes</div>
+    <div class="cards" id="outcome-cards"></div>
+  </div>
+
+  <!-- ==================================================== 4. traffic chart -->
+  <div class="panel">
+    <div class="panel-title">
+      Live traffic - rolling 5 minutes
+      <span class="cap">left axis: queries/sec · right axis: false verdicts/sec</span>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-traffic"></canvas></div>
+    <div class="legend" id="traffic-legend"></div>
+  </div>
+
+  <!-- =============================================== 5 + 6. latency, rcode -->
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-title">Response latency <span class="cap">rolling 60s window, p95 over time</span></div>
+      <div class="cards" id="latency-cards" style="margin-bottom:8px"></div>
+      <div class="chart-wrap short"><canvas id="chart-latency"></canvas></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">RCODE breakdown <span class="cap" id="rcode-cap"></span></div>
+      <div id="rcode-rows"></div>
+    </div>
+  </div>
+
+  <!-- ================================================ 7. by-category table -->
+  <div class="panel">
+    <div class="panel-title">
+      Results by domain category
+      <span class="cap">fp = allow-listed domain that was blocked (outage) · fn = block-listed domain that resolved (gap)</span>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Category</th><th>Expect</th>
+            <th class="num">Sent</th><th class="num">Blocked</th><th class="num">Allowed</th>
+            <th class="num">FP</th><th class="num">FN</th><th class="num">Timeout</th>
+            <th class="num">p95 ms</th><th class="num">Pass rate</th>
+          </tr>
+        </thead>
+        <tbody id="cat-body"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="cat-empty">Waiting for the first query results...</div>
+  </div>
+
+  <!-- ================================================ 10 + 11. alerts -->
+  <div class="grid-2-even">
+    <div class="panel" id="fp-panel">
+      <div class="panel-title">
+        False positives - allow-listed domains blocked
+        <span class="count-pill" id="fp-count">0</span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Domain</th><th>Client</th><th>Category</th><th>RCODE</th><th class="num">Hits</th><th class="num">Last seen</th></tr></thead>
+          <tbody id="fp-body"></tbody>
+        </table>
+      </div>
+      <div class="empty good" id="fp-empty">No allow-listed domain was blocked. Good news.</div>
+    </div>
+    <div class="panel" id="fn-panel">
+      <div class="panel-title">
+        False negatives - block-listed domains resolved
+        <span class="count-pill" id="fn-count">0</span>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Domain</th><th>Client</th><th>Category</th><th>Answer</th><th class="num">Hits</th><th class="num">Last seen</th></tr></thead>
+          <tbody id="fn-body"></tbody>
+        </table>
+      </div>
+      <div class="empty good" id="fn-empty">No block-listed domain resolved. Good news.</div>
+    </div>
+  </div>
+
+  <!-- ============================================ 8 + 9. domains, clients -->
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-title">Top queried domains <span class="cap" id="domains-cap">click a column to sort</span></div>
+      <div class="table-scroll" id="domains-scroll">
+        <table>
+          <thead>
+            <tr id="domains-head">
+              <th class="sortable" data-key="qname">Domain<span class="arrow"></span></th>
+              <th class="sortable" data-key="category">Category<span class="arrow"></span></th>
+              <th class="sortable" data-key="outcome">Outcome<span class="arrow"></span></th>
+              <th class="sortable num" data-key="count">Count<span class="arrow"></span></th>
+              <th class="sortable num" data-key="p95">p95 ms<span class="arrow"></span></th>
+            </tr>
+          </thead>
+          <tbody id="domains-body"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="domains-empty">Waiting for the first query results...</div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Top clients <span class="cap" id="clients-cap"></span></div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Client IP</th><th class="num">Queries</th><th class="num">FP</th><th class="num">FN</th><th class="num">Timeout</th></tr></thead>
+          <tbody id="clients-body"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="clients-empty">Waiting for the first query results...</div>
+    </div>
+  </div>
+
+  <!-- ================================================ 12. list inventory -->
+  <div class="panel" id="sources-panel">
+    <div class="panel-title">Domain lists <span class="cap" id="lists-cap"></span></div>
+    <div class="lists-grid" id="lists-grid"></div>
+    <div class="empty" id="lists-empty">List inventory unavailable.</div>
+    <div class="toolbar">
+      <button id="btn-refresh-all">Refresh all sources</button>
+      <span class="job-line" id="job-line" role="status"></span>
+    </div>
+    <div class="progress" id="job-progress" hidden><div></div></div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Source</th><th class="left">Category</th><th class="num">Names</th>
+            <th class="num">Fetched</th><th>On</th><th>Update</th>
+          </tr>
+        </thead>
+        <tbody id="sources-body"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="sources-empty" hidden>Source management is not available in this session.</div>
+    <div class="compare-note">Lists can only change between runs. Turning a source off or refreshing rebuilds the domain catalogue (about 15 seconds).</div>
+  </div>
+
+</div>
+
+<div id="overlay"><div class="box"><b>Waiting for first data</b>Start a run, or open this page with <code>?demo=1</code> for fake data.</div></div>
+
+<script>
+'use strict';
+
+/* =========================================================================
+   CONSTANTS - mirrors spec.py (Category, RCODE_BUCKETS, Outcome)
+   ========================================================================= */
+
+// Stable display order for the by-category table.  Rows must NOT reorder as
+// counts change, so the order is fixed here rather than taken from the payload.
+const CATEGORY_ORDER = [
+  'allow_popular', 'allow_longtail', 'enterprise', 'borderline',
+  'block_ads', 'block_malware', 'block_phishing', 'block_adult',
+  'nxdomain_probe'
+];
+const CATEGORY_LABELS = {
+  allow_popular: 'Allow - popular',
+  allow_longtail: 'Allow - long tail',
+  enterprise: 'Allow - enterprise/breakage',
+  borderline: 'Borderline - trackers/CDN',
+  block_ads: 'Block - ads',
+  block_malware: 'Block - malware',
+  block_phishing: 'Block - phishing',
+  block_adult: 'Block - adult',
+  nxdomain_probe: 'NXDOMAIN probe'
+};
+const RCODE_BUCKETS = ['NOERROR', 'NXDOMAIN', 'REFUSED', 'SERVFAIL', 'FORMERR', 'NOTIMP', 'TIMEOUT', 'ERROR'];
+const RECEIVED_RCODES = ['NOERROR', 'NXDOMAIN', 'REFUSED', 'SERVFAIL', 'FORMERR', 'NOTIMP'];
+const SENTINEL_RCODES = ['TIMEOUT', 'ERROR'];
+const OUTCOME_ORDER = ['allowed', 'blocked', 'false_positive', 'false_negative', 'nxdomain', 'timeout', 'error'];
+const OUTCOME_LABELS = {
+  allowed: 'Allowed', blocked: 'Blocked', false_positive: 'False pos', false_negative: 'False neg',
+  nxdomain: 'NXDOMAIN', timeout: 'Timeout', error: 'Error'
+};
+const MAX_TABLE_ROWS = 25;
+
+const THEMES = [
+  ['midnight', 'Midnight'], ['grove', 'Grove'], ['tidal-ember', 'Tidal Ember'],
+  ['dusk', 'Dusk'], ['ink-wheat', 'Ink & Wheat']
+];
+// Colours the canvas needs.  Canvas cannot read CSS variables, so they are copied
+// out of the active theme by syncChartColors() whenever the theme changes.
+const THEME_COLORS = { axis: '#7088a0', grid: '#1a2432', gridStrong: '#223045', axisFp: '#b57a8c' };
+
+/* =========================================================================
+   SMALL HELPERS - DOM built with textContent only; no innerHTML anywhere, so
+   a hostile qname read off the wire cannot inject markup or script.
+   ========================================================================= */
+
+function h(tag, className, text) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text !== undefined && text !== null) el.textContent = String(text);
+  return el;
+}
+function setText(el, value) {
+  if (!el) return;
+  const s = (value === undefined || value === null || value === '') ? '-' : String(value);
+  if (el.textContent !== s) el.textContent = s;
+}
+function num(v, fallback) {
+  const f = (fallback === undefined) ? 0 : fallback;
+  return (typeof v === 'number' && isFinite(v)) ? v : f;
+}
+function arr(v) { return Array.isArray(v) ? v : []; }
+function obj(v) { return (v && typeof v === 'object') ? v : {}; }
+function objNum(o, key, fallback) { return num(obj(o)[key], fallback); }
+
+function fmtInt(v) {
+  return num(v).toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+function fmtRate(v) {
+  const n = num(v);
+  if (Math.abs(n) >= 1000) return fmtInt(n);
+  if (Math.abs(n) >= 100) return n.toFixed(0);
+  return n.toFixed(n < 10 ? 2 : 1);
+}
+function fmtMs(v) {
+  const n = num(v);
+  if (n <= 0) return '0';
+  if (n < 10) return n.toFixed(1);
+  if (n < 100) return n.toFixed(0);
+  return fmtInt(n);
+}
+function fmtPctValue(v) { return num(v).toFixed(1) + '%'; }
+function asPercent(fraction) { return (num(fraction) * 100).toFixed(1) + '%'; }
+function fmtDuration(sec) {
+  const s = Math.max(0, Math.floor(num(sec)));
+  const hh = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60), ss = s % 60;
+  return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+}
+function clockOf(epochSeconds) {
+  const t = num(epochSeconds);
+  if (t <= 0) return '-';
+  const d = new Date(t * 1000);
+  return String(d.getHours()).padStart(2, '0') + ':' +
+         String(d.getMinutes()).padStart(2, '0') + ':' +
+         String(d.getSeconds()).padStart(2, '0');
+}
+function relTime(epochSeconds) {
+  const t = num(epochSeconds);
+  if (t <= 0) return '-';
+  const d = (Date.now() / 1000) - t;
+  if (d < 0) return 'in the future';
+  if (d < 1.5) return 'just now';
+  if (d < 60) return Math.round(d) + 's ago';
+  if (d < 3600) return Math.floor(d / 60) + 'm ' + Math.round(d % 60) + 's ago';
+  return Math.floor(d / 3600) + 'h ' + Math.floor((d % 3600) / 60) + 'm ago';
+}
+function categoryChipClass(category) {
+  const c = String(category || '');
+  if (c.startsWith('allow')) return 'chip allow';
+  if (c === 'enterprise') return 'chip enterprise';
+  if (c === 'borderline') return 'chip borderline';
+  if (c.startsWith('block')) return 'chip block';
+  return 'chip probe';
+}
+function outcomeClass(outcome) { return 'out-' + String(outcome || ''); }
+
+/* =========================================================================
+   CANVAS PLUMBING
+   ========================================================================= */
+
+function sizeCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || (canvas.parentElement ? canvas.parentElement.clientWidth : 0) || 300;
+  const hgt = canvas.clientHeight || 150;
+  const pw = Math.max(1, Math.round(w * dpr));
+  const ph = Math.max(1, Math.round(hgt * dpr));
+  // Resizing the backing store clears it, so only do it when it actually changed.
+  if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx: ctx, w: w, h: hgt };
+}
+
+// Round an axis maximum up to a "nice" number (1, 2, 5, 10 x 10^n).
+function niceCeil(v) {
+  if (!isFinite(v) || v <= 0) return 1;
+  const exp = Math.floor(Math.log10(v));
+  const base = Math.pow(10, exp);
+  const f = v / base;
+  let nf;
+  if (f <= 1) nf = 1; else if (f <= 2) nf = 2; else if (f <= 2.5) nf = 2.5;
+  else if (f <= 5) nf = 5; else nf = 10;
+  return nf * base;
+}
+function niceStep(raw) {
+  if (!isFinite(raw) || raw <= 0) return 1;
+  const exp = Math.floor(Math.log10(raw));
+  const base = Math.pow(10, exp);
+  const f = raw / base;
+  let nf;
+  if (f <= 1) nf = 1; else if (f <= 2) nf = 2; else if (f <= 5) nf = 5; else nf = 10;
+  return nf * base;
+}
+
+/**
+ * Draw a multi-series time chart.
+ *
+ * opts.series: [{key, label, color, axis: 'y'|'y2', width, dash, dots, fill}]
+ * data: array of snapshot series buckets ({t, sent, recv, ...}), oldest first.
+ *
+ * Two axes exist because false-positive counts are orders of magnitude smaller
+ * than traffic volume: sharing one axis would flatten the single most important
+ * signal in the tool into an invisible line at zero.
+ */
+function drawTimeChart(canvas, data, opts) {
+  const sized = sizeCanvas(canvas);
+  const ctx = sized.ctx, w = sized.w, hgt = sized.h;
+  if (!w || !hgt) return;
+  ctx.clearRect(0, 0, w, hgt);
+
+  const series = arr(opts.series);
+  const points = arr(data);
+  const hasY2 = series.some(function (s) { return s.axis === 'y2'; });
+
+  const pad = { l: 56, r: hasY2 ? 56 : 16, t: 10, b: 20 };
+  const plotW = w - pad.l - pad.r;
+  const plotH = hgt - pad.t - pad.b;
+
+  // Empty / not-yet-running state.
+  if (!points.length || plotW < 20 || plotH < 20) {
+    ctx.fillStyle = THEME_COLORS.axis;
+    ctx.font = '12px ' + (window.getComputedStyle(document.body).fontFamily || 'sans-serif');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(points.length ? 'chart area too small' : 'no data yet', w / 2, hgt / 2);
+    return;
+  }
+
+  // ---- time axis: use real timestamps when they span a range, else indices.
+  let t0 = num(points[0].t), t1 = num(points[points.length - 1].t);
+  let useIndex = false;
+  if (!(t1 > t0)) { useIndex = true; t0 = 0; t1 = Math.max(1, points.length - 1); }
+
+  // ---- value axes
+  let maxY = 0, maxY2 = 0;
+  for (let i = 0; i < points.length; i++) {
+    for (let s = 0; s < series.length; s++) {
+      const v = num(points[i][series[s].key]);
+      if (series[s].axis === 'y2') { if (v > maxY2) maxY2 = v; }
+      else if (v > maxY) maxY = v;
+    }
+  }
+  maxY = niceCeil(maxY > 0 ? maxY : 1);
+  const yStep = niceStep(maxY / 4) || 1;
+  maxY = Math.max(yStep, Math.ceil(maxY / yStep) * yStep);
+
+  const y2Step = maxY2 > 0 ? niceStep(maxY2 / 3) : 0;
+  const y2Max = maxY2 > 0 ? Math.max(y2Step, Math.ceil(maxY2 / y2Step) * y2Step) : 1;
+
+  function xAt(i) {
+    const v = useIndex ? i : num(points[i].t);
+    return pad.l + ((v - t0) / (t1 - t0)) * plotW;
+  }
+  function yAt(v) {
+    const clamped = Math.min(Math.max(num(v), 0), maxY);
+    return pad.t + plotH - (clamped / maxY) * plotH;
+  }
+  function y2At(v) {
+    const clamped = Math.min(Math.max(num(v), 0), y2Max);
+    return pad.t + plotH - (clamped / y2Max) * plotH;
+  }
+
+  // ---- gridlines + left axis labels
+  ctx.font = '10px ui-monospace, Consolas, monospace';
+  ctx.textBaseline = 'middle';
+  const ticks = [];
+  for (let v = 0; v <= maxY + 1e-9; v += yStep) ticks.push(v);
+  for (let ti = 0; ti < ticks.length; ti++) {
+    const y = Math.round(yAt(ticks[ti])) + 0.5;
+    ctx.strokeStyle = (ticks[ti] === 0) ? THEME_COLORS.gridStrong : THEME_COLORS.grid;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + plotW, y); ctx.stroke();
+    ctx.fillStyle = THEME_COLORS.axis;
+    ctx.textAlign = 'right';
+    ctx.fillText(fmtRate(ticks[ti]), pad.l - 7, y);
+  }
+
+  // ---- right axis labels (false verdicts)
+  if (hasY2) {
+    ctx.textAlign = 'left';
+    for (let k = 0; k <= 3; k++) {
+      const v = (y2Max / 3) * k;
+      const y = Math.round(y2At(v)) + 0.5;
+      ctx.fillStyle = THEME_COLORS.axisFp;
+      ctx.fillText(fmtRate(v), pad.l + plotW + 7, y);
+    }
+  }
+
+  // ---- x axis labels
+  ctx.textAlign = 'center';
+  ctx.fillStyle = THEME_COLORS.axis;
+  const labelCount = Math.max(2, Math.min(6, Math.floor(plotW / 90)));
+  for (let k = 0; k <= labelCount; k++) {
+    const frac = k / labelCount;
+    const x = pad.l + frac * plotW;
+    const v = t0 + frac * (t1 - t0);
+    const label = useIndex ? ('#' + Math.round(v)) : clockOf(v);
+    ctx.fillText(label, Math.min(Math.max(x, pad.l + 12), pad.l + plotW - 12), hgt - 7);
+  }
+
+  // ---- axis titles
+  ctx.save();
+  ctx.translate(11, pad.t + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = THEME_COLORS.axis;
+  ctx.fillText('queries/sec', 0, 0);
+  ctx.restore();
+  if (hasY2) {
+    ctx.save();
+    ctx.translate(w - 10, pad.t + plotH / 2);
+    ctx.rotate(Math.PI / 2);
+    ctx.textAlign = 'center';
+    ctx.fillStyle = THEME_COLORS.axisFp;
+    ctx.fillText('false verdicts/sec', 0, 0);
+    ctx.restore();
+  }
+
+  // ---- plot border
+  ctx.strokeStyle = THEME_COLORS.gridStrong;
+  ctx.strokeRect(pad.l + 0.5, pad.t + 0.5, plotW - 1, plotH - 1);
+
+  // ---- series
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(pad.l, pad.t, plotW, plotH);
+  ctx.clip();
+
+  for (let s = 0; s < series.length; s++) {
+    const spec = series[s];
+    const useY2 = spec.axis === 'y2';
+    const mapY = useY2 ? y2At : yAt;
+
+    ctx.beginPath();
+    for (let i = 0; i < points.length; i++) {
+      const x = xAt(i);
+      const y = mapY(points[i][spec.key]);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.lineWidth = spec.width || (useY2 ? 2 : 1.6);
+    ctx.strokeStyle = spec.color;
+    ctx.lineJoin = 'round';
+    if (spec.dash) ctx.setLineDash(spec.dash); else ctx.setLineDash([]);
+
+    if (spec.fill && points.length > 1) {
+      // Close the path along the baseline so the area can be filled.
+      const lastX = xAt(points.length - 1);
+      const firstX = xAt(0);
+      ctx.lineTo(lastX, pad.t + plotH);
+      ctx.lineTo(firstX, pad.t + plotH);
+      ctx.closePath();
+      ctx.fillStyle = spec.fill;
+      ctx.fill();
+      // Re-trace the line on top of its own fill.
+      ctx.beginPath();
+      for (let i = 0; i < points.length; i++) {
+        const x = xAt(i);
+        const y = mapY(points[i][spec.key]);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Single point, or a non-zero failure point: make sure it is visible.
+    for (let i = 0; i < points.length; i++) {
+      const value = num(points[i][spec.key]);
+      const mark = spec.dots ? (value > 0) : (points.length === 1);
+      if (!mark) continue;
+      ctx.beginPath();
+      ctx.arc(xAt(i), mapY(value), spec.dots ? 2.6 : 2, 0, Math.PI * 2);
+      ctx.fillStyle = spec.color;
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+/* =========================================================================
+   KEYED TABLE - reuses <tr> nodes keyed by a stable id so that sorting and
+   updates do not rebuild the DOM or reset scroll position.
+   ========================================================================= */
+
+function KeyedTable(tbody, keyOf, columns, maxRows) {
+  this.tbody = tbody;
+  this.keyOf = keyOf;
+  this.columns = columns;          // [{text: row => string, cls?: row => string}]
+  this.maxRows = maxRows || MAX_TABLE_ROWS;
+  this.cache = new Map();          // key -> {tr, tds}
+}
+KeyedTable.prototype.update = function (rows) {
+  const shown = arr(rows).slice(0, this.maxRows);
+  const seen = new Set();
+
+  for (let i = 0; i < shown.length; i++) {
+    const row = shown[i];
+    const key = String(this.keyOf(row));
+    seen.add(key);
+    let entry = this.cache.get(key);
+    if (!entry) {
+      const tr = document.createElement('tr');
+      const tds = [];
+      for (let c = 0; c < this.columns.length; c++) {
+        const td = document.createElement('td');
+        tr.appendChild(td);
+        tds.push(td);
+      }
+      entry = { tr: tr, tds: tds };
+      this.cache.set(key, entry);
+    }
+    for (let c = 0; c < this.columns.length; c++) {
+      const col = this.columns[c];
+      const text = col.text(row);
+      const td = entry.tds[c];
+      if (col.node) {
+        // Rich cell (a chip mark-up, say).  ``text`` doubles as the signature so
+        // the node is only rebuilt when its content actually changes, which keeps
+        // element reuse meaningful on a 1 Hz stream.
+        if (td.__sig !== text || !td.firstChild) {
+          td.textContent = '';
+          td.appendChild(col.node(row));
+          td.__sig = text;
+        }
+      } else if (td.textContent !== text) {
+        td.textContent = text;
+        td.__sig = text;
+      }
+      const cls = col.cls ? col.cls(row) : '';
+      if (td.className !== cls) td.className = cls;
+    }
+    // appendChild moves an existing node, which is how rows get reordered
+    // without being destroyed and rebuilt.
+    this.tbody.appendChild(entry.tr);
+  }
+
+  const stale = [];
+  this.cache.forEach(function (entry, key) {
+    if (!seen.has(key)) stale.push(key);
+  });
+  for (let i = 0; i < stale.length; i++) {
+    const entry = this.cache.get(stale[i]);
+    if (entry && entry.tr.parentNode === this.tbody) this.tbody.removeChild(entry.tr);
+    this.cache.delete(stale[i]);
+  }
+};
+
+/* =========================================================================
+   DOM REFERENCES
+   ========================================================================= */
+
+const DEMO = new URLSearchParams(window.location.search).has('demo');
+
+const $ = function (id) { return document.getElementById(id); };
+
+const elRunState = $('run-state');
+const elConnState = $('conn-state');
+const elOverlay = $('overlay');
+const elControlMsg = $('control-msg');
+
+/* =========================================================================
+   CARDS
+   ========================================================================= */
+
+function buildCards(container, specs) {
+  const nodes = {};
+  for (let i = 0; i < specs.length; i++) {
+    const spec = specs[i];
+    const card = h('div', 'card');
+    const value = h('div', 'card-value', '-');
+    const label = h('div', 'card-label', spec.label);
+    card.appendChild(value);
+    card.appendChild(label);
+    container.appendChild(card);
+    nodes[spec.key] = value;
+  }
+  return nodes;
+}
+function setCard(nodes, key, text, cls) {
+  const node = nodes[key];
+  if (!node) return;
+  const want = cls || '';
+  if (node.textContent !== text) node.textContent = text;
+  if (node.className !== 'card-value ' + want) node.className = ('card-value ' + want).trim();
+}
+
+const cardNodes = buildCards($('cards'), [
+  { key: 'qps_sent', label: 'Sent qps' },
+  { key: 'qps_recv', label: 'Recv qps' },
+  { key: 'in_flight', label: 'In flight' },
+  { key: 'error_pct', label: 'Error %' },
+  { key: 'sent', label: 'Total sent' },
+  { key: 'received', label: 'Total received' },
+  { key: 'timeouts', label: 'Timeouts' },
+  { key: 'unique_clients', label: 'Unique clients' },
+  { key: 'unique_domains', label: 'Unique domains' }
+]);
+const outcomeNodes = buildCards($('outcome-cards'), OUTCOME_ORDER.map(function (o) {
+  return { key: o, label: OUTCOME_LABELS[o] };
+}));
+const latencyNodes = buildCards($('latency-cards'), [
+  { key: 'p50', label: 'p50 ms' },
+  { key: 'p95', label: 'p95 ms' },
+  { key: 'p99', label: 'p99 ms' },
+  { key: 'avg', label: 'avg ms' },
+  { key: 'min', label: 'min ms' },
+  { key: 'max', label: 'max ms' }
+]);
+
+/* =========================================================================
+   TABLES
+   ========================================================================= */
+
+// --- by category (fixed order, never resorted) ---------------------------
+const catTable = new KeyedTable($('cat-body'), function (row) { return String(row.category); }, [
+  { text: function (r) { return r.label; } },
+  { text: function (r) { return r.expect; }, cls: function (r) { return 'mono expect-' + r.expect; } },
+  { text: function (r) { return fmtInt(r.sent); }, cls: function () { return 'num'; } },
+  { text: function (r) { return fmtInt(r.blocked); }, cls: function () { return 'num'; } },
+  { text: function (r) { return fmtInt(r.allowed); }, cls: function () { return 'num'; } },
+  { text: function (r) { return fmtInt(r.fp); }, cls: function (r) { return 'num' + (r.fp > 0 ? ' cell-bad' : ' cell-dim'); } },
+  { text: function (r) { return fmtInt(r.fn); }, cls: function (r) { return 'num' + (r.fn > 0 ? ' cell-bad' : ' cell-dim'); } },
+  { text: function (r) { return fmtInt(r.timeout); }, cls: function (r) { return 'num' + (r.timeout > 0 ? ' cell-warn' : ' cell-dim'); } },
+  { text: function (r) { return fmtMs(r.p95); }, cls: function () { return 'num'; } },
+  { text: function (r) { return r.pass_rate === null ? '-' : asPercent(r.pass_rate); }, cls: function () { return 'num'; } }
+], CATEGORY_ORDER.length);
+
+// --- false positives ----------------------------------------------------
+const fpTable = new KeyedTable($('fp-body'), function (row) { return String(row.qname) + '|' + String(row.client_ip); }, [
+  { text: function (r) { return r.qname; }, cls: function () { return 'mono'; } },
+  { text: function (r) { return r.client_ip; }, cls: function () { return 'mono cell-dim'; } },
+  { text: function (r) { return r.category; }, cls: function () { return 'mono cell-dim'; } },
+  { text: function (r) { return r.rcode; }, cls: function () { return 'mono cell-bad'; } },
+  { text: function (r) { return fmtInt(r.count); }, cls: function () { return 'num cell-bad'; } },
+  { text: function (r) { return relTime(r.last_seen); }, cls: function () { return 'num cell-dim'; } }
+], 20);
+
+// --- false negatives ----------------------------------------------------
+const fnTable = new KeyedTable($('fn-body'), function (row) { return String(row.qname) + '|' + String(row.client_ip); }, [
+  { text: function (r) { return r.qname; }, cls: function () { return 'mono'; } },
+  { text: function (r) { return r.client_ip; }, cls: function () { return 'mono cell-dim'; } },
+  { text: function (r) { return r.category; }, cls: function () { return 'mono cell-dim'; } },
+  { text: function (r) { return r.answer || '-'; }, cls: function () { return 'mono'; } },
+  { text: function (r) { return fmtInt(r.count); }, cls: function () { return 'num cell-bad'; } },
+  { text: function (r) { return relTime(r.last_seen); }, cls: function () { return 'num cell-dim'; } }
+], 20);
+
+// --- top domains (sortable) --------------------------------------------
+const domainsHead = $('domains-head');
+const domainsScroll = $('domains-scroll');
+const domainSort = { key: 'count', dir: 'desc' };
+
+const domainTable = new KeyedTable($('domains-body'), function (row) { return String(row.qname); }, [
+  { text: function (r) { return r.qname; }, cls: function () { return 'mono'; } },
+  {
+    text: function (r) { return String(r.category); },
+    cls: function () { return 'chip-cell'; },
+    node: function (r) { return h('span', categoryChipClass(r.category), String(r.category)); }
+  },
+  { text: function (r) { return r.outcome; }, cls: function (r) { return 'mono ' + outcomeClass(r.outcome); } },
+  { text: function (r) { return fmtInt(r.count); }, cls: function () { return 'num'; } },
+  { text: function (r) { return fmtMs(r.p95); }, cls: function () { return 'num'; } }
+], MAX_TABLE_ROWS);
+
+if (domainsHead) {
+  domainsHead.addEventListener('click', function (ev) {
+    const th = ev.target && ev.target.closest ? ev.target.closest('th[data-key]') : null;
+    if (!th) return;
+    const key = th.getAttribute('data-key');
+    if (domainSort.key === key) {
+      domainSort.dir = (domainSort.dir === 'desc') ? 'asc' : 'desc';
+    } else {
+      domainSort.key = key;
+      // Text columns read better ascending; counts and latency descending.
+      domainSort.dir = (key === 'qname' || key === 'category' || key === 'outcome') ? 'asc' : 'desc';
+    }
+    renderDomainSortArrows();
+    if (lastSnapshot) renderTopDomains(lastSnapshot);
+  });
+  renderDomainSortArrows();
+}
+
+function renderDomainSortArrows() {
+  const ths = domainsHead.querySelectorAll('th[data-key]');
+  for (let i = 0; i < ths.length; i++) {
+    const th = ths[i];
+    const arrow = th.querySelector('.arrow');
+    if (!arrow) continue;
+    arrow.textContent = (th.getAttribute('data-key') === domainSort.key)
+      ? (domainSort.dir === 'asc' ? '\u25B2' : '\u25BC')
+      : '';
+  }
+}
+
+// --- top clients --------------------------------------------------------
+const clientsTable = new KeyedTable($('clients-body'), function (row) { return String(row.client_ip); }, [
+  { text: function (r) { return r.client_ip; }, cls: function () { return 'mono'; } },
+  { text: function (r) { return fmtInt(r.count); }, cls: function () { return 'num'; } },
+  { text: function (r) { return fmtInt(r.fp); }, cls: function (r) { return 'num' + (r.fp > 0 ? ' cell-bad' : ' cell-dim'); } },
+  { text: function (r) { return fmtInt(r.fn); }, cls: function (r) { return 'num' + (r.fn > 0 ? ' cell-bad' : ' cell-dim'); } },
+  { text: function (r) { return fmtInt(r.timeout); }, cls: function (r) { return 'num' + (r.timeout > 0 ? ' cell-warn' : ' cell-dim'); } }
+], MAX_TABLE_ROWS);
+
+/* =========================================================================
+   RCODE BREAKDOWN (built once, values updated in place)
+   ========================================================================= */
+
+const rcodeRows = {};      // bucket -> {bar, count, pct}
+const rcodeContainer = $('rcode-rows');
+
+(function buildRcodeRows() {
+  function addRow(bucket, sentinelGroup) {
+    const row = h('div', 'rcode-row');
+    const name = h('div', 'rcode-name' + (sentinelGroup ? ' sentinel' : ''), bucket);
+    if (bucket === 'NOERROR') name.className = 'rcode-name key';
+    const track = h('div', 'rcode-track');
+    const bar = h('div', 'rcode-fill ' + bucket.toLowerCase());
+    bar.style.width = '0%';
+    track.appendChild(bar);
+    const count = h('div', 'rcode-count', '0');
+    const pct = h('div', 'rcode-pct', '0%');
+    row.appendChild(name); row.appendChild(track); row.appendChild(count); row.appendChild(pct);
+    rcodeContainer.appendChild(row);
+    rcodeRows[bucket] = { bar: bar, count: count, pct: pct };
+  }
+  for (let i = 0; i < RECEIVED_RCODES.length; i++) addRow(RECEIVED_RCODES[i], false);
+  rcodeContainer.appendChild(h('div', 'rcode-divider'));
+  for (let i = 0; i < SENTINEL_RCODES.length; i++) addRow(SENTINEL_RCODES[i], true);
+})();
+
+/* =========================================================================
+   LEGENDS
+   ========================================================================= */
+
+// ``token`` names the CSS variable that supplies the colour; ``color`` is filled in
+// from the active theme by syncChartColors().
+const TRAFFIC_SERIES = [
+  { key: 'sent', token: '--sent', label: 'Sent', color: '#4ea6ff', axis: 'y', width: 1.8 },
+  { key: 'recv', token: '--recv', label: 'Received', color: '#3ddc84', axis: 'y', width: 1.8 },
+  { key: 'timeout', token: '--timeout', label: 'Timeout', color: '#ffa726', axis: 'y', width: 1.3, dash: [4, 3] },
+  { key: 'fp', token: '--fp', label: 'False positive', color: '#ff3b6b', axis: 'y2', width: 2.4, dots: true },
+  { key: 'fn', token: '--fn', label: 'False negative', color: '#e879f9', axis: 'y2', width: 2.2, dots: true, dash: [5, 3] }
+];
+const LATENCY_SERIES = [
+  { key: 'p95', token: '--p95', label: 'p95 latency', color: '#7dd3fc', axis: 'y', width: 1.8, fill: 'rgba(125,211,252,0.13)' }
+];
+
+function cssVar(name) {
+  return window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+function withAlpha(hex, alpha) {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + alpha + ')';
+}
+function syncChartColors() {
+  THEME_COLORS.axis = cssVar('--fg-faint') || THEME_COLORS.axis;
+  THEME_COLORS.grid = cssVar('--grid') || THEME_COLORS.grid;
+  THEME_COLORS.gridStrong = cssVar('--grid-strong') || THEME_COLORS.gridStrong;
+  THEME_COLORS.axisFp = cssVar('--axis-fp') || THEME_COLORS.axisFp;
+  TRAFFIC_SERIES.concat(LATENCY_SERIES).forEach(function (spec) {
+    const c = cssVar(spec.token);
+    if (c) spec.color = c;
+  });
+  LATENCY_SERIES[0].fill = withAlpha(LATENCY_SERIES[0].color, 0.13);
+}
+syncChartColors();
+
+const trafficLegend = $('traffic-legend');
+const trafficLegendItems = {};
+(function buildTrafficLegend() {
+  for (let i = 0; i < TRAFFIC_SERIES.length; i++) {
+    const spec = TRAFFIC_SERIES[i];
+    const item = h('div', 'item' + (spec.key === 'fp' ? ' emph' : (spec.key === 'fn' ? ' emph-fn' : '')));
+    const swatch = h('span', 'swatch');
+    swatch.style.background = 'var(' + spec.token + ')';
+    const label = h('span', '', spec.label);
+    const value = h('span', 'val', '0');
+    item.appendChild(swatch); item.appendChild(label); item.appendChild(value);
+    trafficLegend.appendChild(item);
+    trafficLegendItems[spec.key] = value;
+  }
+})();
+
+/* =========================================================================
+   RENDER - snapshot -> DOM
+   ========================================================================= */
+
+let lastSnapshot = null;
+
+function renderSnapshot(snap) {
+  if (!snap || typeof snap !== 'object') return;
+  lastSnapshot = snap;
+
+  const run = obj(snap.run);
+  const totals = obj(snap.totals);
+  const rates = obj(snap.rates);
+  const latency = obj(snap.latency_ms);
+  const outcomes = obj(snap.outcomes);
+  const rcodes = obj(snap.rcodes);
+  const series = arr(snap.series);
+  const byCategory = arr(snap.by_category);
+  const topDomains = arr(snap.top_domains);
+  const topClients = arr(snap.top_clients);
+  const falsePositives = arr(snap.false_positives);
+  const falseNegatives = arr(snap.false_negatives);
+  const verdict = obj(snap.verdict);
+
+  elOverlay.classList.add('hidden');
+
+  /* ---- 1. header ---- */
+  const state = String(run.state || 'idle');
+  elRunState.className = 'badge ' + state;
+  setText(elRunState.querySelector('.txt'), state);
+  setText($('h-server'), run.server ? (run.target_name ? String(run.target_name) + ' · ' : '') + String(run.server) : '-');
+  const planTotal = num(run.plan_total);
+  $('h-plan-kv').hidden = !(planTotal > 1);
+  if (planTotal > 1) setText($('h-plan'), fmtInt(run.plan_index) + ' of ' + fmtInt(planTotal));
+  setText($('h-mode'), run.mode ? String(run.mode) : '-');
+  setText($('h-personas'), run.personas !== undefined ? fmtInt(run.personas) : '-');
+  setText($('h-sourceips'), run.source_ips !== undefined ? fmtInt(run.source_ips) : '-');
+  setText($('h-qps'), run.target_qps !== undefined ? fmtRate(run.target_qps) : '-');
+  setText($('h-elapsed'), fmtDuration(run.elapsed_s));
+  setText($('h-seed'), run.seed !== undefined ? String(run.seed) : '-');
+
+  const running = (state === 'running');
+  $('btn-start').disabled = running || DEMO;
+  $('btn-stop').disabled = (!running) || DEMO;
+  setRunningUi(running);
+
+  /* ---- 2. verdict banner ---- */
+  const vstatus = String(verdict.status || 'idle');
+  const verdictEl = $('verdict');
+  verdictEl.className = 'panel v-' + vstatus;
+  setText($('verdict-status'), vstatus);
+  setText($('verdict-note'), verdict.note ? String(verdict.note) : defaultVerdictNote(vstatus));
+
+  /* ---- 3. cards ---- */
+  setCard(cardNodes, 'qps_sent', fmtRate(rates.qps_sent));
+  setCard(cardNodes, 'qps_recv', fmtRate(rates.qps_recv));
+  setCard(cardNodes, 'in_flight', fmtInt(rates.in_flight));
+  const errPct = num(rates.error_pct);
+  setCard(cardNodes, 'error_pct', fmtPctValue(errPct), errPct >= 5 ? 'bad' : (errPct > 0.5 ? 'warn' : 'good'));
+  setCard(cardNodes, 'sent', fmtInt(totals.sent));
+  setCard(cardNodes, 'received', fmtInt(totals.received));
+  const timeouts = num(totals.timeouts);
+  setCard(cardNodes, 'timeouts', fmtInt(timeouts), timeouts > 0 ? 'warn' : 'dim');
+  setCard(cardNodes, 'unique_clients', fmtInt(totals.unique_clients));
+  setCard(cardNodes, 'unique_domains', fmtInt(totals.unique_domains));
+
+  for (let i = 0; i < OUTCOME_ORDER.length; i++) {
+    const key = OUTCOME_ORDER[i];
+    const value = objNum(outcomes, key);
+    let cls = 'dim';
+    if (key === 'allowed') cls = 'good';
+    else if (key === 'blocked') cls = '';
+    else if (key === 'false_positive') cls = value > 0 ? 'fp' : 'dim';
+    else if (key === 'false_negative') cls = value > 0 ? 'fn' : 'dim';
+    else if (key === 'timeout' || key === 'error') cls = value > 0 ? 'warn' : 'dim';
+    else if (key === 'nxdomain') cls = 'dim';
+    setCard(outcomeNodes, key, fmtInt(value), cls);
+  }
+
+  /* ---- 5. latency cards ---- */
+  const p50 = num(latency.p50), p95 = num(latency.p95), p99 = num(latency.p99);
+  setCard(latencyNodes, 'p50', fmtMs(p50));
+  setCard(latencyNodes, 'p95', fmtMs(p95), p95 > 250 ? 'bad' : (p95 > 100 ? 'warn' : 'good'));
+  setCard(latencyNodes, 'p99', fmtMs(p99), p99 > 500 ? 'bad' : (p99 > 200 ? 'warn' : ''));
+  setCard(latencyNodes, 'avg', fmtMs(latency.avg));
+  setCard(latencyNodes, 'min', fmtMs(latency.min));
+  setCard(latencyNodes, 'max', fmtMs(latency.max), num(latency.max) > 1000 ? 'warn' : 'dim');
+
+  /* ---- 6. rcode breakdown ---- */
+  let rcodeTotal = 0;
+  for (let i = 0; i < RCODE_BUCKETS.length; i++) rcodeTotal += objNum(rcodes, RCODE_BUCKETS[i]);
+  const receivedTotal = num(totals.received);
+  const sentTotal = num(totals.sent);
+  setText($('rcode-cap'),
+    'of ' + fmtInt(sentTotal) + ' sent · ' + fmtInt(receivedTotal) + ' answered' +
+    (sentTotal > 0 ? ' (' + fmtPctValue(receivedTotal / sentTotal * 100) + ')' : ''));
+
+  for (let i = 0; i < RCODE_BUCKETS.length; i++) {
+    const bucket = RCODE_BUCKETS[i];
+    const entry = rcodeRows[bucket];
+    if (!entry) continue;
+    const count = objNum(rcodes, bucket);
+    // Wire rcodes are a share of responses received; the TIMEOUT/ERROR sentinels
+    // are a share of queries sent, since by definition they never arrived.
+    const base = (SENTINEL_RCODES.indexOf(bucket) >= 0) ? sentTotal : receivedTotal;
+    const share = base > 0 ? (count / base) : 0;
+    const width = rcodeTotal > 0 ? (count / rcodeTotal) * 100 : 0;
+    const nextWidth = width.toFixed(2) + '%';
+    if (entry.bar.style.width !== nextWidth) entry.bar.style.width = nextWidth;
+    setText(entry.count, fmtInt(count));
+    setText(entry.pct, fmtPctValue(share * 100));
+  }
+
+  /* ---- 7. by category (fixed order) ---- */
+  const catIndex = new Map();
+  for (let i = 0; i < byCategory.length; i++) {
+    const row = obj(byCategory[i]);
+    if (row.category) catIndex.set(String(row.category), row);
+  }
+  const catRows = CATEGORY_ORDER.map(function (category) {
+    const src = catIndex.get(category) || {};
+    return {
+      category: category,
+      label: src.label ? String(src.label) : (CATEGORY_LABELS[category] || category),
+      expect: src.expect ? String(src.expect) : 'unknown',
+      sent: num(src.sent),
+      blocked: num(src.blocked),
+      allowed: num(src.allowed),
+      fp: num(src.fp),
+      fn: num(src.fn),
+      timeout: num(src.timeout),
+      p95: num(src.p95),
+      pass_rate: (typeof src.pass_rate === 'number' && isFinite(src.pass_rate)) ? src.pass_rate : null
+    };
+  });
+  catTable.update(catRows);
+  const anyCat = catRows.some(function (r) { return r.sent > 0; });
+  $('cat-empty').style.display = anyCat ? 'none' : '';
+  renderPassRateBars();
+
+  /* ---- 8. top domains ---- */
+  renderTopDomains(snap);
+
+  /* ---- 9. top clients ---- */
+  clientsTable.update(topClients);
+  $('clients-empty').style.display = topClients.length ? 'none' : '';
+  setText($('clients-cap'), topClients.length === 1
+    ? 'personas mode: every simulated worker shares one source IP'
+    : (topClients.length ? 'showing up to ' + topClients.length + ' clients' : ''));
+
+  /* ---- 10. false positives ---- */
+  fpTable.update(falsePositives);
+  setText($('fp-count'), fmtInt(falsePositives.length));
+  $('fp-panel').className = 'panel' + (falsePositives.length ? ' alert-panel' : '');
+  $('fp-empty').style.display = falsePositives.length ? 'none' : '';
+  const fpPill = $('fp-count');
+  fpPill.className = 'count-pill' + (falsePositives.length ? ' hot' : '');
+
+  /* ---- 11. false negatives ---- */
+  fnTable.update(falseNegatives);
+  setText($('fn-count'), fmtInt(falseNegatives.length));
+  $('fn-panel').className = 'panel' + (falseNegatives.length ? ' alert-panel fn' : '');
+  $('fn-empty').style.display = falseNegatives.length ? 'none' : '';
+  const fnPill = $('fn-count');
+  fnPill.className = 'count-pill' + (falseNegatives.length ? ' fn-hot' : '');
+
+  /* ---- 4 + 5. charts (coalesced to one paint per frame) ---- */
+  pendingSeries = series;
+  pendingLatencySeries = series;
+  invalidateCharts();
+
+  /* ---- legend current values ---- */
+  const latest = series.length ? series[series.length - 1] : null;
+  for (let i = 0; i < TRAFFIC_SERIES.length; i++) {
+    const spec = TRAFFIC_SERIES[i];
+    const node = trafficLegendItems[spec.key];
+    if (!node) continue;
+    if (!latest) { setText(node, '0'); continue; }
+    const v = num(latest[spec.key]);
+    setText(node, (spec.key === 'fp' || spec.key === 'fn' || spec.key === 'timeout') ? fmtInt(v) : fmtRate(v));
+  }
+
+  setText($('cards-cap'), 'window avg ' + fmtRate(rates.qps_sent_avg) + ' qps · ' +
+    fmtInt(totals.bytes_sent) + ' B out / ' + fmtInt(totals.bytes_received) + ' B in');
+}
+
+function defaultVerdictNote(status) {
+  if (status === 'filtering') return 'Block-listed traffic is being blocked and allow-listed traffic is resolving.';
+  if (status === 'baseline') return 'No categories are expected to be blocked for this target; measuring resolver behaviour only.';
+  if (status === 'passthrough') return 'Block-listed domains are resolving - the appliance is not filtering this traffic.';
+  if (status === 'degraded') return 'Filtering is in place but a significant share of queries are failing or timing out.';
+  if (status === 'idle') return 'No run has started yet.';
+  return 'Not enough results yet to judge the appliance.';
+}
+
+/* Pass-rate bars: an absolutely-positioned div behind the number.  Rebuilt (or
+   cleared) after every category render because the row nodes are owned by the
+   KeyedTable. */
+function renderPassRateBars() {
+  const tbody = $('cat-body');
+  const rows = tbody.querySelectorAll('tr');
+  for (let i = 0; i < rows.length; i++) {
+    const tr = rows[i];
+    const raw = tr.getAttribute('data-rate');
+    const td = tr.cells[tr.cells.length - 1];
+    if (!td) continue;
+    const value = (raw === null) ? NaN : parseFloat(raw);
+
+    if (isNaN(value)) {
+      // No pass rate for this category; do not leave a stale bar behind.
+      if (td.firstChild && td.firstChild.className === 'ratebar') td.textContent = '-';
+      continue;
+    }
+
+    let wrap = (td.firstChild && td.firstChild.className === 'ratebar') ? td.firstChild : null;
+    if (!wrap) {
+      wrap = h('span', 'ratebar');
+      wrap.appendChild(h('span', 'bar'));
+      wrap.appendChild(h('span', 'txt'));
+      td.textContent = '';
+      td.appendChild(wrap);
+    }
+    const bar = wrap.firstChild;
+    const txt = wrap.lastChild;
+    bar.className = 'bar' + (value < 0.95 ? ' low' : '');
+    bar.style.width = (value * 100).toFixed(1) + '%';
+    setText(txt, asPercent(value));
+  }
+}
+
+function renderTopDomains(snap) {
+  const rows = arr(snap.top_domains).slice();
+  const key = domainSort.key, dir = domainSort.dir;
+  rows.sort(function (a, b) {
+    let cmp;
+    if (key === 'count' || key === 'p95') cmp = num(a[key]) - num(b[key]);
+    else cmp = String(a[key] === undefined ? '' : a[key]).localeCompare(String(b[key] === undefined ? '' : b[key]));
+    return dir === 'asc' ? cmp : -cmp;
+  });
+  const scrollTop = domainsScroll ? domainsScroll.scrollTop : 0;
+  domainTable.update(rows);
+  if (domainsScroll) domainsScroll.scrollTop = scrollTop;
+  $('domains-empty').style.display = rows.length ? 'none' : '';
+  setText($('domains-cap'), rows.length
+    ? 'showing ' + Math.min(rows.length, MAX_TABLE_ROWS) + ' of ' + fmtInt(objNum(obj(snap.totals), 'unique_domains')) + ' unique · click a column to sort'
+    : 'click a column to sort');
+}
+
+// The rate bar needs the pass_rate value available to renderPassRateBars, but
+// KeyedTable owns the row nodes; stash it on the row as a data attribute.
+const originalCatUpdate = catTable.update.bind(catTable);
+catTable.update = function (rows) {
+  const result = originalCatUpdate(rows);
+  const tbody = $('cat-body');
+  const trs = tbody.querySelectorAll('tr');
+  for (let i = 0; i < trs.length; i++) {
+    const tr = trs[i];
+    const row = rows[i];
+    if (row && typeof row.pass_rate === 'number') tr.setAttribute('data-rate', String(row.pass_rate));
+    else tr.removeAttribute('data-rate');
+  }
+  return result;
+};
+
+/* =========================================================================
+   CHART SCHEDULING - coalesce redraws to one per animation frame
+   ========================================================================= */
+
+const trafficCanvas = $('chart-traffic');
+const latencyCanvas = $('chart-latency');
+let pendingSeries = [];
+let pendingLatencySeries = [];
+let chartScheduled = false;
+
+function invalidateCharts() {
+  if (chartScheduled) return;
+  chartScheduled = true;
+  window.requestAnimationFrame(function () {
+    chartScheduled = false;
+    drawTimeChart(trafficCanvas, pendingSeries, { series: TRAFFIC_SERIES });
+    drawTimeChart(latencyCanvas, pendingLatencySeries, { series: LATENCY_SERIES });
+  });
+}
+window.addEventListener('resize', invalidateCharts);
+
+/* =========================================================================
+   DOMAIN LIST INVENTORY
+   ========================================================================= */
+
+function renderLists(payload) {
+  const container = $('lists-grid');
+  const emptyEl = $('lists-empty');
+  if (!payload || typeof payload !== 'object') {
+    emptyEl.style.display = '';
+    return;
+  }
+  const categories = arr(payload.categories);
+  while (container.firstChild) container.removeChild(container.firstChild);
+
+  if (!categories.length) {
+    emptyEl.style.display = '';
+  } else {
+    emptyEl.style.display = 'none';
+    for (let i = 0; i < categories.length; i++) {
+      const row = obj(categories[i]);
+      const item = h('div', 'list-item');
+      const left = h('div');
+      const name = h('div', 'lname', row.label ? String(row.label) : String(row.category || '?'));
+      const src = h('div', 'lsrc', row.source ? String(row.source) : 'built-in');
+      src.title = row.source ? String(row.source) : 'built-in';
+      left.appendChild(name); left.appendChild(src);
+      const count = h('div', 'lcount', fmtInt(row.count) + ' names');
+      item.appendChild(left); item.appendChild(count);
+      container.appendChild(item);
+    }
+  }
+  const fetched = num(payload.fetched_at);
+  setText($('lists-cap'), payload.cache_dir
+    ? ('cache: ' + String(payload.cache_dir) + (fetched > 0 ? ' · fetched ' + relTime(fetched) : ' · not fetched yet'))
+    : '');
+}
+
+/* =========================================================================
+   CONNECTION - SSE with polling fallback
+   ========================================================================= */
+
+let eventSource = null;
+let pollTimer = null;
+let sseErrors = 0;
+let listRefreshTimer = null;
+
+function setConn(mode) {
+  elConnState.className = 'badge conn-' + mode;
+  const text = (mode === 'connected') ? 'live' : (mode === 'polling' ? 'polling' : (mode === 'reconnecting' ? 'reconnecting' : 'connecting'));
+  setText(elConnState.querySelector('.txt'), text);
+}
+
+function startPolling() {
+  if (pollTimer) return;
+  setConn('polling');
+  const tick = function () {
+    fetch('/api/stats', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (snap) { if (snap) renderSnapshot(snap); })
+      .catch(function () { /* keep polling; the server may come back */ });
+  };
+  tick();
+  pollTimer = window.setInterval(tick, 1000);
+}
+
+function startStream() {
+  if (typeof window.EventSource !== 'function') { startPolling(); return; }
+  setConn('connecting');
+  try {
+    eventSource = new EventSource('/api/stream');
+  } catch (err) {
+    startPolling();
+    return;
+  }
+  eventSource.onopen = function () { sseErrors = 0; setConn('connected'); };
+  eventSource.addEventListener('stats', function (ev) {
+    sseErrors = 0;
+    setConn('connected');
+    let snap = null;
+    try { snap = JSON.parse(ev.data); } catch (err) { return; }
+    renderSnapshot(snap);
+  });
+  eventSource.onerror = function () {
+    sseErrors += 1;
+    if (pollTimer) return;                    // already polling; nothing to do
+    if (sseErrors >= 3) {
+      // Give up on the stream and fall back rather than spinning forever.
+      if (eventSource) { try { eventSource.close(); } catch (e) {} eventSource = null; }
+      startPolling();
+    } else {
+      setConn('reconnecting');                // EventSource retries by itself
+    }
+  };
+}
+
+/* =========================================================================
+   CONTROLS
+   ========================================================================= */
+
+function runSettings() {
+  const body = {};
+  const qps = parseFloat($('in-qps').value);
+  const dur = parseFloat($('in-duration').value);
+  if (isFinite(qps) && qps > 0) body.target_qps = qps;
+  if (isFinite(dur) && dur >= 0) body.duration_s = dur;
+  return body;
+}
+
+function postJSON(url, body) {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {})
+  }).then(function (r) { return r.json().catch(function () { return {}; }); });
+}
+
+function control(action, extra) {
+  if (DEMO) {
+    setText(elControlMsg, 'demo mode - controls are inert');
+    return;
+  }
+  setText(elControlMsg, action + ' requested...');
+  $('btn-start').disabled = true;
+  $('btn-stop').disabled = true;
+  const body = Object.assign({ action: action }, action === 'stop' ? {} : runSettings(), extra || {});
+  if (action === 'start' && !body.target && $('target-select').value) body.target = $('target-select').value;
+  postJSON('/api/control', body)
+    .then(function (data) {
+      const ok = data && data.ok !== false;
+      setText(elControlMsg, (ok ? '✓ ' : '✗ ') + (data && data.message ? String(data.message) : (data && data.error ? String(data.error) : (action + (ok ? ' accepted' : ' failed')))));
+      refreshStatsOnce();
+    })
+    .catch(function (err) {
+      setText(elControlMsg, '✗ request failed: ' + (err && err.message ? err.message : String(err)));
+      refreshStatsOnce();
+    });
+}
+
+function refreshStatsOnce() {
+  if (DEMO) return;
+  fetch('/api/stats', { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (snap) { if (snap) renderSnapshot(snap); })
+    .catch(function () {});
+}
+
+if ($('btn-start')) $('btn-start').addEventListener('click', function () { control('start'); });
+if ($('btn-stop')) $('btn-stop').addEventListener('click', function () { control('stop'); });
+
+/* =========================================================================
+   THEMES
+   ========================================================================= */
+
+function currentTheme() {
+  const t = document.documentElement.getAttribute('data-theme');
+  return t || 'midnight';
+}
+
+function applyTheme(id) {
+  if (!THEMES.some(function (t) { return t[0] === id; })) id = 'midnight';
+  if (id === 'midnight') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', id);
+  try { window.localStorage.setItem('dlf-theme', id); } catch (e) { /* storage blocked: not remembered */ }
+  syncChartColors();
+  invalidateCharts();
+}
+
+function initThemes() {
+  const select = $('theme-select');
+  THEMES.forEach(function (t) {
+    const opt = h('option', '', t[1]);
+    opt.value = t[0];
+    select.appendChild(opt);
+  });
+  select.value = currentTheme();
+  select.addEventListener('change', function () { applyTheme(select.value); });
+  syncChartColors();
+}
+
+/* =========================================================================
+   TARGETS AND COMPARISON
+   ========================================================================= */
+
+let targetList = [];
+let runningNow = false;
+let jobRunning = false;
+
+function setRunningUi(running) {
+  runningNow = running;
+  const lock = running || DEMO;
+  ['target-select', 'in-qps', 'in-duration', 'cmp-duration', 'btn-compare'].forEach(function (id) {
+    const el = $(id); if (el) el.disabled = lock;
+  });
+  const picks = $('compare-picks').querySelectorAll('input');
+  for (let i = 0; i < picks.length; i++) picks[i].disabled = lock;
+  updateSourceButtons();
+  updateCompareButton();
+}
+
+function renderTargets(payload) {
+  const list = arr(obj(payload).targets);
+  if (!list.length) return;
+  const signature = JSON.stringify(list.map(function (t) { return [t.name, t.server, t.port]; }));
+  if (signature === JSON.stringify(targetList.map(function (t) { return [t.name, t.server, t.port]; }))) return;
+  targetList = list;
+
+  const select = $('target-select');
+  const previous = select.value;
+  while (select.firstChild) select.removeChild(select.firstChild);
+  const picks = $('compare-picks');
+  while (picks.firstChild) picks.removeChild(picks.firstChild);
+
+  list.forEach(function (t) {
+    const label = String(t.name);
+    const address = String(t.server) + (num(t.port) !== 53 ? ':' + t.port : '');
+    const opt = h('option', '', label + ' - ' + address);
+    opt.value = label;
+    select.appendChild(opt);
+
+    const pick = h('label', 'pick');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.value = label;
+    box.addEventListener('change', updateCompareButton);
+    pick.appendChild(box);
+    pick.appendChild(h('span', '', label));
+    pick.appendChild(h('small', '', address));
+    pick.title = t.notes ? String(t.notes) : (t.kind === 'public' ? 'public resolver' : 'appliance');
+    picks.appendChild(pick);
+  });
+
+  const wanted = previous && list.some(function (t) { return t.name === previous; }) ? previous : String(obj(payload).active || list[0].name);
+  select.value = list.some(function (t) { return t.name === wanted; }) ? wanted : String(list[0].name);
+  updateCompareButton();
+}
+
+function selectedCompareTargets() {
+  const out = [];
+  const boxes = $('compare-picks').querySelectorAll('input');
+  for (let i = 0; i < boxes.length; i++) if (boxes[i].checked) out.push(boxes[i].value);
+  return out;
+}
+
+function updateCompareButton() {
+  const n = selectedCompareTargets().length;
+  const btn = $('btn-compare');
+  btn.disabled = runningNow || DEMO || n < 2;
+  setText($('compare-note'), n < 2
+    ? 'Tick two or more targets. Uses the queries/sec in the header.'
+    : n + ' targets selected: each gets the same traffic for ' + ($('cmp-duration').value || '60') + ' seconds.');
+}
+
+function pct(v) { return (typeof v === 'number') ? (v * 100).toFixed(1) + '%' : '-'; }
+
+let lastHistory = '';
+function renderHistory(payload) {
+  const runs = arr(obj(payload).runs);
+  const sig = JSON.stringify(runs.map(function (r) { return [r.index, r.finished_at]; }));
+  if (sig === lastHistory) return;
+  lastHistory = sig;
+
+  const body = $('compare-body');
+  while (body.firstChild) body.removeChild(body.firstChild);
+  $('compare-empty').style.display = runs.length ? 'none' : '';
+
+  // Best value in each column, so the winner is visible without reading numbers.
+  let bestBlock = -1, bestFalse = Infinity, bestP95 = Infinity;
+  runs.forEach(function (r) {
+    if (typeof r.block_rate === 'number' && r.block_rate > bestBlock) bestBlock = r.block_rate;
+    if (typeof r.false_block_rate === 'number' && r.false_block_rate < bestFalse) bestFalse = r.false_block_rate;
+    const p95 = num(obj(r.latency_ms).p95);
+    if (p95 > 0 && p95 < bestP95) bestP95 = p95;
+  });
+
+  runs.slice().reverse().forEach(function (r) {
+    const lat = obj(r.latency_ms);
+    const tr = h('tr');
+    tr.title = r.note ? String(r.note) : '';
+    tr.appendChild(h('td', '', String(r.target) + '  (#' + r.index + ')'));
+    const vcell = h('td', 'left chip-cell');
+    vcell.appendChild(h('span', 'chip v-' + String(r.verdict), String(r.verdict)));
+    tr.appendChild(vcell);
+    const blk = h('td', 'num' + (runs.length > 1 && r.block_rate === bestBlock && bestBlock >= 0 ? ' cell-best' : ''), pct(r.block_rate));
+    tr.appendChild(blk);
+    tr.appendChild(h('td', 'num' + (num(r.leaked) > 0 ? ' cell-warn' : ''), fmtInt(r.leaked)));
+    tr.appendChild(h('td', 'num' + (num(r.false_positives) > 0 ? (r.false_block_rate === bestFalse && runs.length > 1 ? ' cell-best' : ' cell-warn') : (runs.length > 1 ? ' cell-best' : '')), pct(r.false_block_rate)));
+    tr.appendChild(h('td', 'num', fmtMs(lat.p50)));
+    tr.appendChild(h('td', 'num' + (runs.length > 1 && num(lat.p95) === bestP95 ? ' cell-best' : ''), fmtMs(lat.p95)));
+    tr.appendChild(h('td', 'num' + (num(r.error_pct) > 1 ? ' cell-warn' : ''), fmtPctValue(r.error_pct)));
+    tr.appendChild(h('td', 'num', fmtInt(r.sent)));
+    body.appendChild(tr);
+  });
+}
+
+function loadTargets() {
+  fetch('/api/targets', { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (p) { if (p) renderTargets(p); })
+    .catch(function () {});
+}
+function loadHistory() {
+  fetch('/api/history', { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (p) { if (p) renderHistory(p); })
+    .catch(function () {});
+}
+
+function fillRunSettings() {
+  fetch('/api/config', { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (c) {
+      if (!c) return;
+      if (!$('in-qps').value) $('in-qps').value = num(c.target_qps) || 1000;
+      if (!$('in-duration').value) $('in-duration').value = num(c.duration_s);
+    })
+    .catch(function () {});
+}
+
+/* =========================================================================
+   DOMAIN SOURCES - refresh and enable/disable from the dashboard
+   ========================================================================= */
+
+let lastSources = '';
+let sourcePayload = null;
+
+function fmtAge(seconds) {
+  if (typeof seconds !== 'number') return 'never';
+  if (seconds < 90) return 'just now';
+  if (seconds < 5400) return Math.round(seconds / 60) + ' min ago';
+  if (seconds < 172800) return Math.round(seconds / 3600) + ' h ago';
+  return Math.round(seconds / 86400) + ' d ago';
+}
+
+function updateSourceButtons() {
+  const blocked = runningNow || jobRunning || DEMO || !(sourcePayload && sourcePayload.available);
+  const all = $('btn-refresh-all');
+  if (all) all.disabled = blocked;
+  const controls = $('sources-body').querySelectorAll('button, input');
+  for (let i = 0; i < controls.length; i++) controls[i].disabled = blocked;
+}
+
+function renderSources(payload) {
+  sourcePayload = obj(payload);
+  const job = obj(sourcePayload.job);
+  jobRunning = job.state === 'running';
+
+  // Job status line and progress bar.
+  const line = $('job-line');
+  const progress = $('job-progress');
+  line.className = 'job-line';
+  if (job.state === 'running') {
+    const total = Math.max(1, num(job.total));
+    setText(line, (job.kind === 'refresh' ? 'Refreshing ' : 'Updating ') + (job.current ? String(job.current) : '...') +
+      '  (' + fmtInt(job.done) + ' of ' + fmtInt(total) + ')');
+    progress.hidden = false;
+    progress.firstChild.style.width = Math.min(100, (num(job.done) / total) * 100).toFixed(0) + '%';
+  } else if (job.state === 'done') {
+    progress.hidden = true;
+    const results = arr(job.results);
+    const failed = results.filter(function (r) { return r.status === 'failed'; });
+    const updated = results.filter(function (r) { return r.status === 'updated'; }).length;
+    setText(line, results.length
+      ? 'Finished: ' + updated + ' updated, ' + (results.length - updated - failed.length) + ' unchanged' + (failed.length ? ', ' + failed.length + ' failed (kept the cached copy)' : '') + '.'
+      : 'Catalogue rebuilt.');
+    if (failed.length) {
+      line.className = 'job-line err';
+      line.title = failed.map(function (r) { return r.slug + ': ' + r.error; }).join('\n');
+    }
+  } else if (job.state === 'error') {
+    progress.hidden = true;
+    line.className = 'job-line err';
+    setText(line, 'Update failed: ' + String(job.error || 'unknown error'));
+  } else {
+    progress.hidden = true;
+    setText(line, sourcePayload.available === false ? 'List management is not available in this session.' : '');
+  }
+
+  const rows = arr(sourcePayload.sources);
+  $('sources-empty').hidden = rows.length > 0;
+  const sig = JSON.stringify(rows) + String(job.state) + String(job.done);
+  if (sig !== lastSources) {
+    lastSources = sig;
+    const body = $('sources-body');
+    while (body.firstChild) body.removeChild(body.firstChild);
+    rows.forEach(function (r) {
+      const tr = h('tr', r.enabled ? '' : 'src-off');
+      const name = h('td', '', String(r.slug));
+      name.title = String(r.description || '') + '\n' + String(r.url || '');
+      tr.appendChild(name);
+      tr.appendChild(h('td', 'left', String(r.category)));
+      tr.appendChild(h('td', 'num', r.count ? fmtInt(r.count) : '-'));
+      const age = h('td', 'num' + (r.stale ? ' cell-warn' : ''), fmtAge(r.age_s));
+      if (r.stale) age.title = 'older than the 7 day trust window';
+      tr.appendChild(age);
+
+      const onCell = h('td');
+      const toggle = document.createElement('input');
+      toggle.type = 'checkbox'; toggle.className = 'toggle'; toggle.checked = !!r.enabled;
+      toggle.setAttribute('aria-label', 'Use ' + r.slug);
+      toggle.addEventListener('change', function () {
+        postJSON('/api/sources/enabled', { slug: r.slug, enabled: toggle.checked }).then(function (d) {
+          if (d && d.ok === false) { toggle.checked = !toggle.checked; setText($('job-line'), String(d.message || 'not allowed right now')); }
+          loadSources();
+        });
+      });
+      onCell.appendChild(toggle);
+      tr.appendChild(onCell);
+
+      const btnCell = h('td');
+      const btn = h('button', 'small', 'Refresh');
+      btn.addEventListener('click', function () {
+        postJSON('/api/sources/refresh', { slugs: [r.slug] }).then(function (d) {
+          if (d && d.ok === false) setText($('job-line'), String(d.message || 'not allowed right now'));
+          loadSources();
+        });
+      });
+      btnCell.appendChild(btn);
+      tr.appendChild(btnCell);
+      body.appendChild(tr);
+    });
+  }
+  updateSourceButtons();
+
+  // While an update runs, look again quickly; otherwise the slow timer is enough.
+  if (jobRunning) window.setTimeout(loadSources, 1500);
+  // A finished job changed the catalogue, so refresh the category counts too.
+  if (!jobRunning && lastJobState === 'running') loadLists();
+  lastJobState = job.state;
+}
+let lastJobState = 'idle';
+
+function loadSources() {
+  fetch('/api/sources', { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (p) { if (p) renderSources(p); })
+    .catch(function () {});
+}
+
+function loadLists() {
+  fetch('/api/lists', { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (p) { if (p) renderLists(p); })
+    .catch(function () {});
+}
+
+if ($('btn-compare')) $('btn-compare').addEventListener('click', function () {
+  const names = selectedCompareTargets();
+  if (names.length < 2) return;
+  const secs = parseFloat($('cmp-duration').value);
+  control('compare', { targets: names, duration_s: (isFinite(secs) && secs >= 10) ? secs : 60 });
+});
+if ($('cmp-duration')) $('cmp-duration').addEventListener('input', updateCompareButton);
+if ($('btn-refresh-all')) $('btn-refresh-all').addEventListener('click', function () {
+  postJSON('/api/sources/refresh', {}).then(function (d) {
+    if (d && d.ok === false) setText($('job-line'), String(d.message || 'not allowed right now'));
+    loadSources();
+  });
+});
+
+/* =========================================================================
+   DEMO MODE - generate a plausible snapshot locally so the page can be
+   inspected with no backend at all.
+   ========================================================================= */
+
+function makeDemoSource() {
+  const startedAt = Date.now() / 1000;
+  const series = [];
+  const fpMap = new Map();
+  const fnMap = new Map();
+  let tickIndex = 0;
+
+  const enterprise = ['login.microsoftonline.com', 'outlook.office365.com', 'teams.microsoft.com', 'windowsupdate.com'];
+  const blocked = ['ads.tracker-example.net', 'doubleclick.example.com', 'malware-c2.example.org'];
+  const popular = ['www.google.com', 'cdn.jsdelivr.net', 'graph.microsoft.com', 'api.github.com', 'www.amazon.com'];
+
+  function tick() {
+    tickIndex += 1;
+    const now = Date.now() / 1000;
+
+    // An FP burst between ticks 25 and 45 so the alert panel is exercised.
+    const inFpBurst = tickIndex >= 25 && tickIndex <= 45;
+    const sent = 900 + Math.round(Math.sin(tickIndex / 7) * 120 + Math.random() * 60);
+    const fpRate = inFpBurst ? (18 + Math.round(Math.random() * 25)) : (Math.random() < 0.25 ? Math.round(Math.random() * 2) : 0);
+    const fnRate = Math.random() < 0.3 ? Math.round(Math.random() * 3) : 0;
+    const timeout = Math.random() < 0.12 ? Math.round(Math.random() * 5) : 0;
+    const recv = sent - timeout;
+    const p95 = inFpBurst ? 60 + Math.random() * 90 : 4 + Math.random() * 8;
+
+    series.push({ t: Math.round(now), sent: sent, recv: recv, timeout: timeout, fp: fpRate, fn: fnRate, p95: p95 });
+    while (series.length > 300) series.shift();
+
+    let fpTotal = 0, fnTotal = 0;
+    for (let i = 0; i < series.length; i++) { fpTotal += series[i].fp; fnTotal += series[i].fn; }
+
+    if (inFpBurst) {
+      for (let i = 0; i < enterprise.length; i++) {
+        const key = enterprise[i];
+        const prev = fpMap.get(key) || { qname: key, client_ip: '10.1.106.7', category: 'enterprise', rcode: i % 2 ? 'SERVFAIL' : 'NXDOMAIN', count: 0, last_seen: 0 };
+        prev.count += 1 + Math.round(Math.random() * 2);
+        prev.last_seen = now - Math.random() * 40;
+        fpMap.set(key, prev);
+      }
+    }
+    if (fnTotal > 0) {
+      const key = blocked[tickIndex % blocked.length];
+      const prev = fnMap.get(key) || { qname: key, client_ip: '10.1.106.7', category: 'block_malware', answer: '203.0.113.' + (10 + (tickIndex % 40)), count: 0, last_seen: 0 };
+      prev.count += fnRate;
+      prev.last_seen = now - Math.random() * 30;
+      fnMap.set(key, prev);
+    }
+
+    const byCategory = CATEGORY_ORDER.map(function (category) {
+      const share = { allow_popular: 0.42, allow_longtail: 0.18, enterprise: 0.11, borderline: 0.07, block_ads: 0.09, block_malware: 0.04, block_phishing: 0.03, block_adult: 0.01, nxdomain_probe: 0.05 }[category] || 0.02;
+      const cSent = Math.round(sent * share);
+      const isAllow = category.indexOf('allow') === 0 || category === 'enterprise';
+      const expect = (category === 'borderline') ? 'unknown' : (category === 'nxdomain_probe' ? 'nxdomain' : (isAllow ? 'allow' : 'block'));
+      const cFp = (isAllow && inFpBurst) ? Math.round(cSent * 0.09) : 0;
+      const cFn = (!isAllow && expect === 'block') ? Math.round(cSent * 0.01) : 0;
+      const cTimeout = Math.round(cSent * 0.01);
+      const blockedCount = expect === 'block' ? Math.max(0, cSent - cFn) : 0;
+      const allowedCount = expect === 'allow' ? Math.max(0, cSent - cFp - cTimeout) : (expect === 'block' ? 0 : Math.max(0, cSent - cTimeout));
+      return {
+        category: category, label: CATEGORY_LABELS[category], expect: expect,
+        sent: cSent, blocked: blockedCount, allowed: allowedCount,
+        fp: cFp, fn: cFn, timeout: cTimeout, p95: p95 + Math.random() * 3,
+        pass_rate: cSent > 0 ? Math.max(0, 1 - (cFp + cFn + cTimeout) / cSent) : null
+      };
+    });
+
+    const topDomains = popular.map(function (d, i) {
+      return { qname: d, count: 400 - i * 55 + Math.round(Math.random() * 20), category: i < 3 ? 'allow_popular' : 'allow_longtail', outcome: 'allowed', p95: 2 + Math.random() * 6 };
+    }).concat([
+      { qname: 'ads.tracker-example.net', count: 180, category: 'block_ads', outcome: 'blocked', p95: 3 + Math.random() * 4 },
+      { qname: 'random-probe-8f2a.example', count: 60, category: 'nxdomain_probe', outcome: 'nxdomain', p95: 4 + Math.random() * 5 }
+    ]);
+    if (inFpBurst) {
+      topDomains.push({ qname: enterprise[0], count: 310, category: 'enterprise', outcome: 'false_positive', p95: 140 });
+      topDomains.push({ qname: enterprise[2], count: 240, category: 'enterprise', outcome: 'false_positive', p95: 120 });
+    }
+
+    const rcodeCounts = {
+      NOERROR: Math.max(0, recv - 40), NXDOMAIN: 24, REFUSED: inFpBurst ? 60 : 4,
+      SERVFAIL: inFpBurst ? 30 : 1, FORMERR: 0, NOTIMP: 0, TIMEOUT: timeout, ERROR: Math.random() < 0.2 ? 1 : 0
+    };
+
+    const status = inFpBurst ? 'degraded' : (tickIndex < 8 ? 'unknown' : 'filtering');
+
+    return {
+      run: {
+        state: 'running', started_at: startedAt, elapsed_s: now - startedAt,
+        server: '10.1.106.5:53', mode: 'personas', personas: 10000, source_ips: 1,
+        target_qps: 1000, seed: 1337
+      },
+      totals: {
+        sent: sent * tickIndex, received: recv * tickIndex, timeouts: timeout * tickIndex,
+        errors: tickIndex, bytes_sent: sent * tickIndex * 42, bytes_received: recv * tickIndex * 118,
+        unique_clients: 1, unique_domains: 4821
+      },
+      rates: {
+        qps_sent: sent, qps_recv: recv, error_pct: sent > 0 ? (timeout + fpRate) / sent * 100 : 0,
+        qps_sent_avg: 960, in_flight: 12 + Math.round(Math.random() * 20)
+      },
+      latency_ms: { p50: p95 * 0.35, p95: p95, p99: p95 * 1.8, min: 0.4, max: p95 * 4, avg: p95 * 0.55 },
+      outcomes: {
+        allowed: 4200 + tickIndex * 8, blocked: 1100 + tickIndex * 2,
+        false_positive: fpTotal, false_negative: fnTotal,
+        nxdomain: 300 + tickIndex, timeout: timeout * tickIndex, error: tickIndex
+      },
+      rcodes: rcodeCounts,
+      series: series.slice(),
+      by_category: byCategory,
+      top_domains: topDomains,
+      top_clients: [{ client_ip: '10.1.106.7', count: sent * tickIndex, fp: fpTotal, fn: fnTotal, timeout: timeout * tickIndex }],
+      false_positives: Array.from(fpMap.values()),
+      false_negatives: Array.from(fnMap.values()),
+      verdict: {
+        status: status,
+        note: status === 'degraded'
+          ? 'Filtering works, but allow-listed enterprise domains are being blocked right now.'
+          : 'Block-listed traffic is being blocked and allow-listed traffic is resolving.'
+      }
+    };
+  }
+
+  return {
+    start: function () {
+      renderSnapshot(tick());
+      setConn('connected');
+      window.setInterval(function () { renderSnapshot(tick()); }, 1000);
+      renderLists({
+        cache_dir: 'lists/cache (demo)',
+        fetched_at: Date.now() / 1000 - 3600,
+        categories: CATEGORY_ORDER.map(function (c, i) {
+          return { category: c, label: CATEGORY_LABELS[c], count: 500 * (i + 1) + 120, source: 'demo source ' + (i + 1) };
+        })
+      });
+    }
+  };
+}
+
+/* =========================================================================
+   BOOT
+   ========================================================================= */
+
+function boot() {
+  initThemes();
+  if (DEMO) {
+    document.body.className = 'demo';
+    setText(elControlMsg, 'demo mode - showing generated data, no backend contacted');
+    ['dl-csv', 'dl-jsonl', 'dl-json'].forEach(function (id) {
+      const el = $(id);
+      if (el) { el.href = '#'; el.addEventListener('click', function (e) { e.preventDefault(); }); }
+    });
+    makeDemoSource().start();
+    return;
+  }
+
+  startStream();
+
+  loadLists();
+  listRefreshTimer = window.setInterval(loadLists, 30000);
+  loadTargets();
+  fillRunSettings();
+  loadHistory();
+  window.setInterval(loadHistory, 4000);
+  loadSources();
+  window.setInterval(function () { if (!jobRunning) loadSources(); }, 30000);
+
+  // Draw the empty charts immediately so the layout does not jump later.
+  invalidateCharts();
+}
+
+boot();
+</script>
+</body>
+</html>

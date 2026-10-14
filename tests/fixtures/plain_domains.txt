@@ -1,0 +1,19 @@
+# plain domain list fixture (one domain per line, with debris)
+example-allowed.com
+cdn.example-allowed.com
+
+   spaced.example-allowed.com
+trailing-dot.example-allowed.com.
+||adblock-style.example-blocked.com^
+||with-modifier.example-blocked.com^$third-party
+UPPER-PLAIN.example-allowed.com
+example-allowed.com
+1.2.3.4
+-leadinghyphen.example.com
+trailinghyphen-.example.com
+toolonglabel-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com
+mixed.under_score.example.com
+www.valid-with-underscore.example.com
+plain.example-allowed.com # trailing comment
+94.45.46.46
+example.com:8080
