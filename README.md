@@ -43,6 +43,9 @@ python -m dnsloadforge --server 10.0.0.10 --qps 2000 --duration 900     # your o
 
 ## What it actually tests
 
+Everything runs from **one machine**: one process generates the whole office's traffic
+and serves the dashboard.
+
 A DNS filter identifies a client by **source IP**. "10,000 workers" therefore splits
 into two different things, and this tool does both:
 
@@ -398,10 +401,17 @@ does the obvious thing.
 * **Presets are not a certification.** The built-in targets encode each service's
   published behaviour, which changes. A verdict against one is only as good as that
   description; override it in `targets.json` when the service's documentation differs.
-* **This is a real load generator.** Pointed at a production resolver at 10,000 qps it
-  is an outage. Well-known public resolvers are refused above 100 qps unless you pass
-  `--allow-public-target`. The `--mock` path exists so you never have to find out the
-  hard way.
+* **One host per run.** All traffic comes from the machine running the tool. There is
+  no coordination between machines: copies started on several hosts are separate tests
+  with separate verdicts, and with the same `--seed` they send identical traffic rather
+  than splitting one office between them. For more distinct clients, use pool mode; for
+  more throughput, raise `--threads`.
+* **This is a real load generator.** 10,000 qps is a busy office's peak hour, sent on
+  top of whatever production traffic is already there. That can saturate a small
+  appliance or a firewall's DNS proxy, and it is real extra load on any production
+  resolver, so run it in a change window. Well-known public resolvers are refused above
+  100 qps unless you pass `--allow-public-target`. The `--mock` path exists so you never
+  have to find out the hard way.
 
 ## Contributing
 
