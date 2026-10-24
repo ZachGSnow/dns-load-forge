@@ -8,6 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ![DNS Load Forge dashboard during a run against the built-in mock appliance: FILTERING verdict, throughput and outcome cards, live traffic chart, latency and RCODE breakdown](docs/dashboard.png)
+*Screenshot from a run against the built-in mock appliance, not a real product.*
 
 DNS Load Forge simulates the DNS behaviour of an office of up to **10,000 workers** and
 tells you whether the filter in front of them is doing its job. It sends a realistic mix of
@@ -339,7 +340,7 @@ full 10,000 qps soak.
 ## Tests
 
 ```bash
-cd DnsLoadForge
+cd dns-load-forge
 python -m unittest discover -s tests -t tests -v
 ```
 
