@@ -8,6 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ![DNS Load Forge dashboard during a run against the built-in mock appliance: FILTERING verdict, throughput and outcome cards, live traffic chart, latency and RCODE breakdown](docs/dashboard.png)
+*Screenshot from a run against the built-in mock appliance, not a real product.*
 
 DNS Load Forge simulates the DNS behaviour of an office of up to **10,000 workers** and
 tells you whether the filter in front of them is doing its job. It sends a realistic mix of
@@ -22,10 +23,12 @@ a filter "blocks threats" and would like to see it do it.
   several filters in turn and read the results side by side.
 * **Scoring that fits the target.** A family-safe resolver is not marked down for letting
   ads through, and a public resolver is not marked down for not knowing `corp.local`.
-* **A live dashboard** with five themes, a compare table, and domain lists you can refresh
-  from the page.
+* **A live dashboard** built with Tailwind CSS and shadcn/ui: verdict, live charts, findings
+  tables, side-by-side comparisons and domain lists you can refresh from the page, in light
+  or dark and five palettes.
 * **Dependency-free.** Python 3.10+ standard library only; no capture driver, no privileges,
-  runs from a USB stick on an isolated segment.
+  runs from a USB stick on an isolated segment. The dashboard is one self-contained page
+  that makes no request beyond the tool itself.
 
 ```
 python -m dnsloadforge targets                       # what you can test against
@@ -163,25 +166,33 @@ network, the targets and the day's threat feeds.)*
 
 ## The dashboard
 
-Near-real-time, updated once a second over Server-Sent Events:
+Near-real-time, updated once a second over Server-Sent Events, with three pages:
 
-* **Verdict banner** - the headline answer, colour-coded.
-* **Live traffic chart** - sent/received per second over a rolling 5-minute window,
-  with false positives and false negatives on their own axis so the most important
-  signal cannot be lost among the traffic lines.
-* **Latency** - p50/p95/p99 cards plus a p95-over-time area chart.
-* **RCODE breakdown** - including the timeout and generator-error buckets, which are
-  shares of queries *sent* rather than received, since they never arrived.
-* **By-category table** - every category with its expectation, counts, pass rate.
-* **Top domains / top clients**, sortable.
-* **False positives / false negatives** - the money tables.
-* **Compare targets** - pick targets, run them on identical traffic, read the table.
+* **Live run** - the run in progress.
+  * **Verdict** - the headline answer, colour-coded, with the reason.
+  * **Run** - pick a target, a rate and a duration; Start and Stop.
+  * **Headline cards** - sent and received qps, loss, p95 latency, block rate and false
+    blocks.
+  * **Live traffic** - sent/received/timeouts per second over a rolling 5 minutes, with
+    false positives and false negatives on their own scale underneath so the most
+    important signal cannot be lost among the traffic lines.
+  * **Query outcomes and RCODE breakdown** - including the timeout and generator-error
+    buckets, which are shares of queries *sent* rather than received, since they never
+    arrived.
+  * **Latency** - p50/p95/p99 plus p95 over time.
+  * **Results by category** - every category with its expectation, counts and pass rate.
+  * **False positives / false negatives** - the money tables.
+  * **Top domains / top clients**, sortable.
+* **Compare** - tick targets, run them on identical traffic, and read the table and charts.
 * **Domain lists** - what mix was actually loaded, and a **Sources** table to refresh each
   list, refresh them all, or switch one off. List changes happen between runs only, because
   re-parsing a million-name list would otherwise distort the latency being measured. A
   refresh needs internet; a failed or empty download keeps the cached copy.
-* **Themes** - Midnight (default), Grove, Tidal Ember, Dusk and Ink & Wheat, chosen from
-  the header and remembered per browser. Text contrast is checked in every one.
+
+`Ctrl K` opens a command palette (start, stop, go to a page, export, switch theme). Themes
+are Light, Dark and System plus the original five palettes (Midnight, Grove, Tidal Ember,
+Dusk, Ink & Wheat), remembered per browser; text contrast is tested in every one. Open the
+page with `?demo=1` to see it with generated data and no backend.
 
 `GET /api/stats` returns the same snapshot as JSON, `GET /api/stream` is the SSE feed,
 and `POST /api/control` starts and stops runs (`{"action":"start","target":"Quad9"}`,
@@ -191,8 +202,9 @@ and `POST /api/control` starts and stops runs (`{"action":"start","target":"Quad
 evidence is downloadable as CSV, JSONL or JSON.
 
 The dashboard can start load tests and has no login, so it only answers on `127.0.0.1`: it
-refuses cross-origin writes, non-JSON writes and DNS-rebinding requests, and binding it
-anywhere else needs `--allow-remote-dashboard`. Details in [SECURITY.md](SECURITY.md).
+refuses cross-origin writes, non-JSON writes and DNS-rebinding requests, cannot be framed by
+another site, and binding it anywhere else needs `--allow-remote-dashboard`. Details in
+[SECURITY.md](SECURITY.md).
 
 ## Reading the verdict
 
@@ -339,11 +351,10 @@ full 10,000 qps soak.
 ## Tests
 
 ```bash
-cd DnsLoadForge
 python -m unittest discover -s tests -t tests -v
 ```
 
-274 tests, no network access required. The ones that matter most are the seven
+285 tests, no network access required. The ones that matter most are the seven
 end-to-end verdict scenarios in `tests/test_engine.py`, which drive real UDP at a real
 mock appliance and assert that an honest filter is reported as `filtering` **while** a
 passthrough, overblocking and lossy filter each produce a different, correct verdict.
@@ -351,6 +362,11 @@ passthrough, overblocking and lossy filter each produce a different, correct ver
 the shipped role mixes with repeat-set behaviour enabled, so a single mis-attributed
 category on the hot path makes a perfectly good filter look like it is blocking
 legitimate traffic.
+
+The dashboard has its own checks in `web/` (`npm test`: number formatting and the 4.5:1
+contrast of every theme), and `tests/test_dashboard.py` pins what the packaged page
+promises: plain ASCII, no external requests, and a Content-Security-Policy whose hashes
+really admit its scripts.
 
 `tests/test_cli.py` covers the command surface and the safety guards, and exists
 because two bugs were only ever visible end to end: `serve --mock` silently ignored

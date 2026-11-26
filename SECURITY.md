@@ -22,6 +22,9 @@ reachable only from the machine that runs it:
   you then own the exposure.
 * On loopback it refuses any request whose `Host` is not localhost (DNS rebinding), any
   cross-origin or cross-site write, and any write that is not JSON (cross-site form posts).
+* The page is served with a Content-Security-Policy that admits only its own inline scripts
+  (by hash) and lets it talk to this server and nothing else, and it refuses to be framed
+  by another site, so its Start button cannot be clickjacked.
 * Everything the page renders from the network is inserted as text, never markup.
 
 If you put it behind a reverse proxy, add authentication there.

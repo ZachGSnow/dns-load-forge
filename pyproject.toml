@@ -33,4 +33,4 @@ version = { attr = "dnsloadforge.__version__" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-dnsloadforge = ["dashboard/*.html", "sources.json"]
+dnsloadforge = ["dashboard/*.html", "dashboard/*.txt", "sources.json"]

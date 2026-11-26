@@ -3,8 +3,8 @@
 This is the leaf module: it imports nothing else from the package, and every
 other module agrees on the names defined here.  If you change a Category name,
 an Outcome name or a field on QueryRecord you must update ``stats.py``,
-``server.py`` and ``dashboard/index.html`` together -- the dashboard renders the
-snapshot schema documented at the bottom of this file.
+``server.py`` and ``web/src/lib/schema.ts`` together, and rebuild the dashboard --
+it renders the snapshot schema documented at the bottom of this file.
 
 No third-party dependencies anywhere in this package by design: it must run on a
 fresh Windows box with nothing but Python installed.
@@ -378,7 +378,7 @@ class SinkholeSet:
 # STATS SNAPSHOT SCHEMA -- the contract between stats.py and the dashboard.
 # ---------------------------------------------------------------------------
 # ``StatsAggregator.snapshot()`` returns exactly this shape.  The dashboard
-# (``dashboard/index.html``) consumes ``/api/stats`` and the SSE stream
+# (built from ``web/``; see ``web/src/lib/schema.ts``) consumes ``/api/stats`` and the SSE stream
 # (``/api/stream``), both of which emit this object verbatim.  Every numeric
 # field is a number, never a string, so the chart code can use it directly.
 #

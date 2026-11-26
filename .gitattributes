@@ -19,3 +19,10 @@
 *.webp binary
 *.pdf  binary
 *.zip  binary
+
+# The dashboard page and its notices are built from web/ (npm run build). LF everywhere,
+# because the server hashes the page's inline scripts for its Content-Security-Policy;
+# marked generated so pull-request diffs collapse them.
+src/dnsloadforge/dashboard/index.html              text eol=lf linguist-generated=true
+src/dnsloadforge/dashboard/THIRD_PARTY_NOTICES.txt text eol=lf linguist-generated=true
+web/package-lock.json                              linguist-generated=true

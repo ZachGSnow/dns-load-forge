@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>DNS Load Forge</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23171717'/%3E%3Cpath d='M9 23V9h5a7 7 0 010 14z' fill='none' stroke='%2360a5fa' stroke-width='2.6'/%3E%3Ccircle cx='24' cy='16' r='2.6' fill='%2334d399'/%3E%3C/svg%3E"
+    />
+    <script>
+      // Apply the saved theme before first paint so there is no flash of the
+      // default.  Must agree with resolveMode() in src/lib/themes.ts.
+      ;(function () {
+        var theme = "dark"
+        try {
+          var saved = window.localStorage.getItem("dlf-theme")
+          if (saved && /^[a-z-]{1,20}$/.test(saved)) theme = saved
+        } catch (e) {
+          /* storage blocked: default theme */
+        }
+        var palettes = ["midnight", "grove", "tidal-ember", "dusk", "ink-wheat"]
+        var dark = true
+        if (theme === "light") dark = false
+        else if (theme === "system")
+          dark =
+            !window.matchMedia ||
+            window.matchMedia("(prefers-color-scheme: dark)").matches
+        var root = document.documentElement
+        root.classList.add(dark ? "dark" : "light")
+        if (palettes.indexOf(theme) >= 0) root.setAttribute("data-theme", theme)
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

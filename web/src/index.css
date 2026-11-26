@@ -1,0 +1,431 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/*
+  Fonts are inlined into the built page (Latin subset only), so the dashboard
+  never asks the network for anything.  Other scripts fall back to system fonts.
+*/
+@font-face {
+  font-family: "Geist Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/geist/files/geist-latin-wght-normal.woff2")
+    format("woff2-variations");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Geist Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2")
+    format("woff2-variations");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans:
+    "Geist Variable", ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  --font-heading: var(--font-sans);
+  --font-mono:
+    "Geist Mono Variable", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* What the tool's findings mean, independent of the palette. */
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-info: var(--info);
+  --color-fp: var(--fp);
+  --color-fn: var(--fn);
+
+  /* Chart series. */
+  --color-series-sent: var(--series-sent);
+  --color-series-recv: var(--series-recv);
+  --color-series-timeout: var(--series-timeout);
+  --color-series-fp: var(--series-fp);
+  --color-series-fn: var(--series-fn);
+  --color-series-p95: var(--series-p95);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/*
+  Themes.  Light and Dark are shadcn's neutral palette; the other five are the
+  dashboard's original palettes mapped onto the same tokens, so every component
+  follows whichever is active.  Each was checked for contrast: text and status
+  colours at least 4.5:1 on the page and card surfaces (src/lib/themes.test.ts
+  enforces it).
+*/
+:root {
+  color-scheme: light;
+  --radius: 0.625rem;
+  --background: #ffffff;
+  --foreground: #0a0a0a;
+  --card: #ffffff;
+  --card-foreground: #0a0a0a;
+  --popover: #ffffff;
+  --popover-foreground: #0a0a0a;
+  --primary: #171717;
+  --primary-foreground: #fafafa;
+  --secondary: #f5f5f5;
+  --secondary-foreground: #171717;
+  --muted: #f5f5f5;
+  --muted-foreground: #6b6b6b;
+  --accent: #f5f5f5;
+  --accent-foreground: #171717;
+  --destructive: #dc2626;
+  --border: #e5e5e5;
+  --input: #e5e5e5;
+  --ring: #a1a1a1;
+  --sidebar: #fafafa;
+  --sidebar-foreground: #0a0a0a;
+  --sidebar-primary: #171717;
+  --sidebar-primary-foreground: #fafafa;
+  --sidebar-accent: #f0f0f0;
+  --sidebar-accent-foreground: #171717;
+  --sidebar-border: #e5e5e5;
+  --sidebar-ring: #a1a1a1;
+
+  --ok: #047857;
+  --warn: #b45309;
+  --bad: #dc2626;
+  --info: #0369a1;
+  --fp: #be123c;
+  --fn: #a21caf;
+
+  --series-sent: #2563eb;
+  --series-recv: #059669;
+  --series-timeout: #d97706;
+  --series-fp: #e11d48;
+  --series-fn: #c026d3;
+  --series-p95: #0284c7;
+  --chart-1: var(--series-sent);
+  --chart-2: var(--series-recv);
+  --chart-3: var(--series-timeout);
+  --chart-4: var(--series-fp);
+  --chart-5: var(--series-fn);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #0a0a0a;
+  --foreground: #fafafa;
+  --card: #141414;
+  --card-foreground: #fafafa;
+  --popover: #171717;
+  --popover-foreground: #fafafa;
+  --primary: #e5e5e5;
+  --primary-foreground: #171717;
+  --secondary: #262626;
+  --secondary-foreground: #fafafa;
+  --muted: #262626;
+  --muted-foreground: #a1a1a1;
+  --accent: #262626;
+  --accent-foreground: #fafafa;
+  --destructive: #f87171;
+  --border: rgb(255 255 255 / 10%);
+  --input: rgb(255 255 255 / 15%);
+  --ring: #737373;
+  --sidebar: #111111;
+  --sidebar-foreground: #fafafa;
+  --sidebar-primary: #e5e5e5;
+  --sidebar-primary-foreground: #171717;
+  --sidebar-accent: #262626;
+  --sidebar-accent-foreground: #fafafa;
+  --sidebar-border: rgb(255 255 255 / 10%);
+  --sidebar-ring: #737373;
+
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  --info: #38bdf8;
+  --fp: #fb7185;
+  --fn: #e879f9;
+
+  --series-sent: #60a5fa;
+  --series-recv: #34d399;
+  --series-timeout: #fbbf24;
+  --series-fp: #fb7185;
+  --series-fn: #e879f9;
+  --series-p95: #7dd3fc;
+}
+
+.dark[data-theme="midnight"] {
+  --background: #0b0f14;
+  --foreground: #dce6f2;
+  --card: #121821;
+  --card-foreground: #dce6f2;
+  --popover: #161e29;
+  --popover-foreground: #dce6f2;
+  --primary: #4ea6ff;
+  --primary-foreground: #0b0f14;
+  --secondary: #161e29;
+  --secondary-foreground: #dce6f2;
+  --muted: #161e29;
+  --muted-foreground: #8fa2b8;
+  --accent: #1a2432;
+  --accent-foreground: #dce6f2;
+  --destructive: #ff4d5e;
+  --border: #223045;
+  --input: #223045;
+  --ring: #4ea6ff;
+  --sidebar: #0e141c;
+  --sidebar-foreground: #dce6f2;
+  --sidebar-primary: #4ea6ff;
+  --sidebar-primary-foreground: #0b0f14;
+  --sidebar-accent: #161e29;
+  --sidebar-accent-foreground: #dce6f2;
+  --sidebar-border: #1a2432;
+  --sidebar-ring: #4ea6ff;
+
+  --ok: #3ddc84;
+  --warn: #ffb020;
+  --bad: #ff4d5e;
+  --info: #4ea6ff;
+  --fp: #ff3b6b;
+  --fn: #e879f9;
+
+  --series-sent: #4ea6ff;
+  --series-recv: #3ddc84;
+  --series-timeout: #ffa726;
+  --series-fp: #ff3b6b;
+  --series-fn: #e879f9;
+  --series-p95: #7dd3fc;
+}
+
+.dark[data-theme="grove"] {
+  --background: #1d2711;
+  --foreground: #fefae0;
+  --card: #283618;
+  --card-foreground: #fefae0;
+  --popover: #314220;
+  --popover-foreground: #fefae0;
+  --primary: #dda15e;
+  --primary-foreground: #1d2711;
+  --secondary: #314220;
+  --secondary-foreground: #fefae0;
+  --muted: #314220;
+  --muted-foreground: #d2cfae;
+  --accent: #3a4d23;
+  --accent-foreground: #fefae0;
+  --destructive: #ff8274;
+  --border: #4a5e2d;
+  --input: #4a5e2d;
+  --ring: #dda15e;
+  --sidebar: #222e14;
+  --sidebar-foreground: #fefae0;
+  --sidebar-primary: #dda15e;
+  --sidebar-primary-foreground: #1d2711;
+  --sidebar-accent: #314220;
+  --sidebar-accent-foreground: #fefae0;
+  --sidebar-border: #3a4d23;
+  --sidebar-ring: #dda15e;
+
+  --ok: #a9c46c;
+  --warn: #dda15e;
+  --bad: #ff8274;
+  --info: #e9c088;
+  --fp: #ff8274;
+  --fn: #d9a8ea;
+
+  --series-sent: #dda15e;
+  --series-recv: #a9c46c;
+  --series-timeout: #e08a3c;
+  --series-fp: #ff8274;
+  --series-fn: #d9a8ea;
+  --series-p95: #e9c088;
+}
+
+.dark[data-theme="tidal-ember"] {
+  --background: #001219;
+  --foreground: #f3ebcb;
+  --card: #04202b;
+  --card-foreground: #f3ebcb;
+  --popover: #082b38;
+  --popover-foreground: #f3ebcb;
+  --primary: #4cc3c4;
+  --primary-foreground: #001219;
+  --secondary: #082b38;
+  --secondary-foreground: #f3ebcb;
+  --muted: #082b38;
+  --muted-foreground: #b9d8ce;
+  --accent: #0b3342;
+  --accent-foreground: #f3ebcb;
+  --destructive: #ff6a47;
+  --border: #12495a;
+  --input: #12495a;
+  --ring: #4cc3c4;
+  --sidebar: #021821;
+  --sidebar-foreground: #f3ebcb;
+  --sidebar-primary: #4cc3c4;
+  --sidebar-primary-foreground: #001219;
+  --sidebar-accent: #082b38;
+  --sidebar-accent-foreground: #f3ebcb;
+  --sidebar-border: #0b3342;
+  --sidebar-ring: #4cc3c4;
+
+  --ok: #94d2bd;
+  --warn: #ee9b00;
+  --bad: #ff6a47;
+  --info: #4cc3c4;
+  --fp: #ff6a47;
+  --fn: #e9d8a6;
+
+  --series-sent: #2bb8bb;
+  --series-recv: #94d2bd;
+  --series-timeout: #ee9b00;
+  --series-fp: #ff6a47;
+  --series-fn: #e9d8a6;
+  --series-p95: #94d2bd;
+}
+
+.dark[data-theme="dusk"] {
+  --background: #18233a;
+  --foreground: #f6ece8;
+  --card: #1f2d48;
+  --card-foreground: #f6ece8;
+  --popover: #273856;
+  --popover-foreground: #f6ece8;
+  --primary: #eaac8b;
+  --primary-foreground: #18233a;
+  --secondary: #273856;
+  --secondary-foreground: #f6ece8;
+  --muted: #273856;
+  --muted-foreground: #cbc1d2;
+  --accent: #2e4262;
+  --accent-foreground: #f6ece8;
+  --destructive: #ff7e82;
+  --border: #3c5379;
+  --input: #3c5379;
+  --ring: #eaac8b;
+  --sidebar: #1b2741;
+  --sidebar-foreground: #f6ece8;
+  --sidebar-primary: #eaac8b;
+  --sidebar-primary-foreground: #18233a;
+  --sidebar-accent: #273856;
+  --sidebar-accent-foreground: #f6ece8;
+  --sidebar-border: #2e4262;
+  --sidebar-ring: #eaac8b;
+
+  --ok: #7fd1ae;
+  --warn: #eaac8b;
+  --bad: #ff7e82;
+  --info: #b3c8ea;
+  --fp: #ff7e82;
+  --fn: #d2a6e3;
+
+  --series-sent: #86a8da;
+  --series-recv: #7fd1ae;
+  --series-timeout: #eaac8b;
+  --series-fp: #ff7e82;
+  --series-fn: #d2a6e3;
+  --series-p95: #b3c8ea;
+}
+
+.dark[data-theme="ink-wheat"] {
+  --background: #04151f;
+  --foreground: #efd6ac;
+  --card: #0a2429;
+  --card-foreground: #efd6ac;
+  --popover: #103136;
+  --popover-foreground: #efd6ac;
+  --primary: #f07a2a;
+  --primary-foreground: #04151f;
+  --secondary: #103136;
+  --secondary-foreground: #efd6ac;
+  --muted: #103136;
+  --muted-foreground: #cdb88f;
+  --accent: #173f3d;
+  --accent-foreground: #efd6ac;
+  --destructive: #ff5c7a;
+  --border: #215049;
+  --input: #215049;
+  --ring: #f07a2a;
+  --sidebar: #071c24;
+  --sidebar-foreground: #efd6ac;
+  --sidebar-primary: #f07a2a;
+  --sidebar-primary-foreground: #04151f;
+  --sidebar-accent: #103136;
+  --sidebar-accent-foreground: #efd6ac;
+  --sidebar-border: #173f3d;
+  --sidebar-ring: #f07a2a;
+
+  --ok: #9bd1a4;
+  --warn: #e8a33d;
+  --bad: #ff5c7a;
+  --info: #8ed0c7;
+  --fp: #ff5c7a;
+  --fn: #d58bb4;
+
+  --series-sent: #62b8ae;
+  --series-recv: #9bd1a4;
+  --series-timeout: #e8a33d;
+  --series-fp: #ff5c7a;
+  --series-fn: #d58bb4;
+  --series-p95: #8ed0c7;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+@utility num {
+  font-variant-numeric: tabular-nums;
+}
