@@ -1,6 +1,7 @@
 import {
   ActivityIcon,
   DatabaseIcon,
+  GaugeIcon,
   GitCompareArrowsIcon,
   InfoIcon,
   ListChecksIcon,
@@ -43,6 +44,12 @@ export const NAV: {
     label: "Compare",
     description: "Identical seeded traffic sent to each target in turn",
     icon: GitCompareArrowsIcon,
+  },
+  {
+    route: "capacity",
+    label: "Capacity",
+    description: "The highest rate a target sustains within your limits",
+    icon: GaugeIcon,
   },
   {
     route: "checks",

@@ -18,6 +18,10 @@ addresses that come back. Even so:
   by address or, for DNS over HTTPS and TLS, by the name on their certificate. Only test
   services you are authorised to test, and ask a vendor before pushing hard on a shared
   service.
+* `capacity` raises the load until the target breaks one of your limits. On a resolver in
+  production that is the outage you are measuring for, so run it in a change window,
+  against a target you are authorised to load, with `--max-qps` set to what you are
+  prepared to send. The public-resolver guard judges that highest rate.
 * Over DNS over TLS and HTTPS the server's certificate is checked against the system's
   roots, or the CAs in `--ca-file`. `--insecure` turns the check off: the traffic is still
   encrypted, but the server is not authenticated, so keep it for a lab appliance whose

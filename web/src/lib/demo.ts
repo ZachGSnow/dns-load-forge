@@ -5,6 +5,8 @@
 
 import { CATEGORY_LABELS, CATEGORY_ORDER } from "@/lib/constants"
 import type {
+  CapacityPayload,
+  CapacityStep,
   ChecksPayload,
   ConfigPayload,
   FindingRow,
@@ -574,6 +576,69 @@ const ev = (
   error: "",
   ...extra,
 })
+
+function capacityStep(
+  index: number,
+  phase: "ramp" | "refine",
+  rate: number,
+  p95: number,
+  loss: number,
+  reasons: string[] = []
+): CapacityStep {
+  const sent = rate * 20
+  return {
+    index,
+    phase,
+    target_qps: rate,
+    achieved_qps: rate * 0.998,
+    offered_qps: rate * 0.998,
+    sent,
+    received: Math.round(sent * (1 - loss / 100)),
+    completed: sent,
+    loss_pct: loss,
+    servfail_pct: 0,
+    rate_limited_pct: 0,
+    dropped_pct: 0,
+    p50_ms: Math.max(1, Math.round(p95 / 4)),
+    p95_ms: p95,
+    p99_ms: p95 * 2,
+    status: reasons.length ? "fail" : "pass",
+    reasons,
+  }
+}
+
+export const demoCapacity: CapacityPayload = {
+  state: "done",
+  target: demoTargets.targets?.[0],
+  plan: { start_qps: 200, max_qps: 20000, growth: 1.5, step_s: 20, refine: 2 },
+  slo: { loss_pct: 1, servfail_pct: 1, p95_ms: 100 },
+  estimate_s: 367,
+  started_at: Date.now() / 1000 - 420,
+  finished_at: Date.now() / 1000 - 180,
+  current: null,
+  steps: [
+    capacityStep(1, "ramp", 200, 5, 0),
+    capacityStep(2, "ramp", 300, 5, 0),
+    capacityStep(3, "ramp", 450, 5, 0),
+    capacityStep(4, "ramp", 680, 9, 0),
+    capacityStep(5, "ramp", 1000, 9, 0),
+    capacityStep(6, "ramp", 1500, 20, 0),
+    capacityStep(7, "ramp", 2300, 30, 0.1),
+    capacityStep(8, "ramp", 3400, 150, 2.4, [
+      "loss 2.4% (limit 1%)",
+      "p95 150 ms (limit 100 ms)",
+    ]),
+    capacityStep(9, "refine", 2800, 50, 0.3),
+    capacityStep(10, "refine", 3100, 150, 0.6, ["p95 150 ms (limit 100 ms)"]),
+  ],
+  result: {
+    sustained_qps: 2800,
+    knee_qps: 3100,
+    limit: "target",
+    summary:
+      "Sustains 2,800 qps (p95 50 ms, loss 0.3%). At 3,100 qps: p95 150 ms (limit 100 ms).",
+  },
+}
 
 export const demoChecks: ChecksPayload = {
   state: "done",

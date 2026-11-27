@@ -23,6 +23,7 @@ src/dnsloadforge/
   server.py          stdlib HTTP + SSE dashboard, run/compare control, list jobs, request screening
   mockappliance.py   simulated filtering appliance, 8 scenarios, standalone CLI
   checks.py          deployment checks: identity, bypass, canaries, DNSSEC, SafeSearch
+  capacity.py        capacity search: ramp, refine, and judge each step against the limits
   dashboard/index.html  the front end: built from web/ into one self-contained file
   dashboard/THIRD_PARTY_NOTICES.txt  licenses of the libraries bundled into that page
 web/                       the dashboard's source: React, Tailwind CSS, shadcn/ui, Recharts
@@ -33,7 +34,7 @@ scripts/
   Invoke-DnsLoadForge.ps1   PowerShell front end
   New-LabSourceIPs.ps1      create/remove the source-IP pool (elevated)
   Get-DnsLoadForgeCapture.ps1  pktmon wire capture + reconcile (elevated)
-tests/                     369 tests; no network required
+tests/                     390 tests; no network required
 runs/                      per-query record logs (gitignored)
 lists/cache/               fetched domain lists in a checkout (gitignored); a pip install uses
                            %LOCALAPPDATA%\dnsloadforge or ~/.cache/dnsloadforge instead
@@ -239,6 +240,33 @@ connections drops queries the way the in-flight budget does instead of queueing 
   as a real server does) and DoH over plain HTTP. The TLS layer was verified live against
   Quad9, Google, Cloudflare and OpenDNS, and the code that is TLS-specific -- the context
   and the wording of certificate errors -- is small and tested directly.
+
+### Capacity search judges the generator before the target
+
+`capacity.py` holds the search and nothing else: it is handed a `run_step(rate)` function
+and decides what to try next, so the tests drive it with model targets (a function from a
+rate to a snapshot) and every ending -- a knee, no knee, a failure at the first rate, a
+generator limit, a stop -- runs in milliseconds. The server and the command line pass in
+real runs, each step a fresh run on the same seed, so the live view shows the step in
+progress without a second code path.
+
+* **Ramp, then bisect.** Geometric steps find the order of magnitude quickly; a couple of
+  bisections between the last pass and the first failure pin it to two significant
+  figures, which is as precise as a stepped search can honestly claim.
+* **The generator first.** A step whose *offered* rate (sent plus dropped, over the
+  sending window) fell short of the target was limited by this machine, and the search
+  stops there rather than report the machine's limit as the target's. A full in-flight
+  budget is judged by what the target was doing: if it was answering within its limits,
+  the budget was too small (`--max-inflight`); if it was failing, the queries it left
+  unanswered filled the budget, and the step is the target's failure.
+* **Rate limiting counts.** More than 0.5% of answers with EDE 31 or 32 breaks a step, even
+  inside the loss and SERVFAIL limits: the target has said it is shedding load.
+* **Steps stay out of the comparison history**, which a search would fill with a dozen
+  near-identical rows; the search keeps them and exports them itself.
+
+The mock's delayed replies now wait in a bounded queue, as an overloaded appliance's do.
+With an unbounded one, a step far above its capacity left seconds of replies queued, and
+the next, lower step failed on the backlog.
 
 ### Deployment checks are single queries with evidence
 

@@ -289,6 +289,11 @@ class MockApplianceConfig:
     #: sleep, so without concurrency the ``slow`` scenario would serialise every
     #: request and the measured latency would be useless.
     workers: int = 64
+    #: How many delayed replies may wait at once.  Beyond it the mock drops the
+    #: query, as an overloaded appliance's finite queue does; an unbounded queue
+    #: kept answering seconds late after the overload ended, and failed the next
+    #: run too.
+    max_backlog: int = 2048
     #: Optional per-request hook.  Return response bytes to override the default
     #: behaviour, or ``None`` to fall through to it.  Used by tests to inject
     #: weird responses (truncation, malformed bodies) without a new scenario.
@@ -380,6 +385,7 @@ class MockAppliance:
         self._rng_lock = threading.Lock()
         self._rng = random.Random(config.seed)
         self._arrivals: list[float] = []
+        self._backlog = 0
         self._stats: dict[str, int] = {
             "received": 0,
             "answered": 0,
@@ -600,12 +606,21 @@ class MockAppliance:
         if delay_s <= 0.0 or executor is None:
             reply(packet)
             return
+        with self._lock:
+            if self._backlog >= self.config.max_backlog:
+                self._stats["dropped"] += 1
+                return
+            self._backlog += 1
         executor.submit(self._deliver, reply, packet, delay_s)
 
     def _deliver(self, reply: Callable[[bytes], None], packet: bytes, delay_s: float) -> None:
-        if self._stop.wait(delay_s):
-            return  # shutting down; do not bother sending
-        reply(packet)
+        try:
+            if self._stop.wait(delay_s):
+                return  # shutting down; do not bother sending
+            reply(packet)
+        finally:
+            with self._lock:
+                self._backlog -= 1
 
     def _serve_tcp(self) -> None:
         listener = self._tcp_sock
@@ -715,10 +730,10 @@ class MockAppliance:
                 self._bump(overridden=1)
                 return _Disposition(packet=packet, rcode="CUSTOM")
 
-        # 1. A rate limiter acts before policy.
+        # 1. A rate limiter acts before policy, and says so with EDE 31 Rate Limited.
         if self._rate_limited():
             self._bump(rate_limited=1)
-            return self._reply(msg, _RCODE_SERVFAIL, edns_size)
+            return self._reply(msg, _RCODE_SERVFAIL, edns_size, self._options(msg, ede=31))
 
         # 2. Policy: the block list.
         blocked = not self.config.passthrough and (
@@ -764,12 +779,14 @@ class MockAppliance:
         # 6. An ordinary answer.
         return self._answer_reply(msg, qtype, edns_size)
 
-    def _options(self, msg: DNSMessage, *, blocked: bool = False) -> list[tuple[int, bytes]]:
-        """EDNS options for a reply: an Extended DNS Error on a block, and the NSID
-        when the query asked for it.  Only sent to a query that used EDNS, since a
-        client without it could not read them."""
+    def _options(self, msg: DNSMessage, *, blocked: bool = False, ede: int = 0) -> list[tuple[int, bytes]]:
+        """EDNS options for a reply: an Extended DNS Error on a block (or ``ede``),
+        and the NSID when the query asked for it.  Only sent to a query that used
+        EDNS, since a client without it could not read them."""
         options: list[tuple[int, bytes]] = []
-        if blocked and self.config.block_ede:
+        if ede:
+            options.append(ede_option(ede, "the mock appliance's rate limit"))
+        elif blocked and self.config.block_ede:
             options.append(ede_option(self.config.block_ede, "blocked by the mock appliance"))
         if self.config.nsid and EDNS_NSID in msg.edns_options:
             options.append((EDNS_NSID, self.config.nsid.encode("ascii", "replace")))

@@ -1,5 +1,6 @@
 import { DEMO, getJSON, postJSON } from "@/lib/api"
 import {
+  demoCapacity,
   demoChecks,
   demoConfig,
   demoHistory,
@@ -8,6 +9,9 @@ import {
   demoTargets,
 } from "@/lib/demo"
 import type {
+  CapacityPayload,
+  CapacityPlan,
+  CapacitySlo,
   ChecksPayload,
   ConfigPayload,
   ControlResponse,
@@ -31,6 +35,8 @@ export const fetchChecks = () =>
   DEMO ? demo(demoChecks) : getJSON<ChecksPayload>("/api/checks")
 export const fetchConfig = () =>
   DEMO ? demo(demoConfig) : getJSON<ConfigPayload>("/api/config")
+export const fetchCapacity = () =>
+  DEMO ? demo(demoCapacity) : getJSON<CapacityPayload>("/api/capacity")
 
 export interface StartOptions {
   target?: string
@@ -103,6 +109,19 @@ export async function setSourceEnabled(
   return describe(
     enabled ? "enable" : "disable",
     await postJSON<ControlResponse>("/api/sources/enabled", { slug, enabled })
+  )
+}
+
+export async function startCapacity(
+  options: CapacityPlan & { target?: string; slo: CapacitySlo }
+): Promise<ActionResult> {
+  if (DEMO) return DEMO_RESULT
+  return describe(
+    "capacity",
+    await postJSON<ControlResponse>("/api/control", {
+      action: "capacity",
+      ...options,
+    })
   )
 }
 

@@ -55,4 +55,5 @@ export const DOWNLOADS = {
   jsonl: "/api/run/export.jsonl",
   json: "/api/run/export.json",
   history: "/api/history/export.json",
+  capacity: "/api/capacity/export.json",
 } as const
