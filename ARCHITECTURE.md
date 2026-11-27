@@ -38,12 +38,13 @@ scripts/
   Invoke-DnsLoadForge.ps1   PowerShell front end
   New-LabSourceIPs.ps1      create/remove the source-IP pool (elevated)
   Get-DnsLoadForgeCapture.ps1  pktmon wire capture + reconcile (elevated)
-tests/                     419 tests; no network required
+tests/                     429 tests; no network required
 runs/                      per-query record logs (gitignored)
 lists/cache/               fetched domain lists in a checkout (gitignored); a pip install uses
                            %LOCALAPPDATA%\dnsloadforge or ~/.cache/dnsloadforge instead
                            (override with $DNSLOADFORGE_CACHE)
 targets.example.json       a starting point for your own targets
+packaging/                 the Windows executable: PyInstaller recipe, icon, zip and checksum
 ```
 
 `spec.py` is a leaf module that imports nothing else from the package, and every other
@@ -300,6 +301,22 @@ in which no run finished fails its assertions, because "nothing to check" must n
 green. `metrics.py` renders the live snapshot in Prometheus' text format with base units
 (seconds) and escaped label values; its counters are per run, which Prometheus sees as an
 ordinary counter reset.
+
+### The Windows executable
+
+The tool needs Python and nothing else, but "install Python" is a step too many on a
+locked-down laptop, so each release also ships a PyInstaller build. It is one folder,
+not one self-extracting file: a one-file build unpacks itself into `%TEMP%` on every
+start, slowly, which is also what droppers do, so antivirus engines flag it far more
+often. For the same reason UPX is off and the workflow compiles PyInstaller's bootloader
+instead of shipping the prebuilt one every PyInstaller program carries. The zip includes
+an empty `lists` folder, which `default_cache_dir()` and `default_data_dir()` take as a
+checkout, so the lists and the history stay beside the executable and the folder runs from
+a USB stick. Double-clicked from Explorer -- the only process attached to its console --
+it serves the dashboard on the mock and opens it; from a terminal it is the command line.
+The release workflow tests the packaged folder itself before it publishes anything, and
+attaches a build-provenance attestation so a download can be traced to the commit that
+built it.
 
 ### Deployment checks are single queries with evidence
 

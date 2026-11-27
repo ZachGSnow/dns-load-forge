@@ -1,0 +1,101 @@
+name: Release
+
+# Builds the Windows executable.  On a pull request that touches packaging, and on
+# demand, it only builds and tests it; on a v* tag it also attaches the zip and its
+# checksum to the GitHub Release, with a build-provenance attestation.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "packaging/**"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: windows executable
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install PyInstaller, compiling its bootloader here
+        # The prebuilt bootloader is in every PyInstaller program, malware included,
+        # so antivirus engines flag it; one compiled for this build is not.  The source
+        # release carries the bootloader's source and also prebuilt copies, which a
+        # plain source install quietly uses, so this builds it with waf and fails if
+        # the result is still the prebuilt file.
+        run: |
+          python -m pip download --no-binary :all: --no-deps "pyinstaller==6.22.3" -d pyinstaller-src
+          tar -xzf pyinstaller-src/pyinstaller-6.22.3.tar.gz -C pyinstaller-src
+          $source = "pyinstaller-src/pyinstaller-6.22.3"
+          $runner = "$source/PyInstaller/bootloader/Windows-64bit-intel/run.exe"
+          $prebuilt = (Get-FileHash $runner).Hash
+          Push-Location "$source/bootloader"
+          python ./waf all --target-arch=64bit
+          $status = $LASTEXITCODE
+          Pop-Location
+          if ($status -ne 0) { exit $status }
+          $compiled = (Get-FileHash $runner).Hash
+          if ($compiled -eq $prebuilt) { throw "the bootloader was not rebuilt" }
+          Write-Output "bootloader compiled here: $compiled (the prebuilt one was $prebuilt)"
+          python -m pip install $source
+      - name: Build
+        run: python -m PyInstaller --noconfirm --clean packaging/dnsloadforge.spec
+      - name: Package
+        run: python packaging/package.py --tag "${{ github.ref_type == 'tag' && github.ref_name || '' }}"
+      - name: Test the packaged executable
+        # From the zip's own folder, as a user would run it: lists and history land
+        # beside the executable, and a run against the built-in mock must pass.
+        working-directory: dist
+        run: |
+          $folder = Get-ChildItem -Directory -Filter "DNS-Load-Forge-*-windows-x64" | Select-Object -First 1
+          & "$($folder.FullName)\dnsloadforge.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & "$($folder.FullName)\dnsloadforge.exe" run --mock --no-dashboard --offline --duration 3 --qps 200 --personas 200 --quiet --assert "loss<=5"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (-not (Test-Path "$($folder.FullName)\runs\history.jsonl")) { throw "the run history was not kept beside the executable" }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    if: github.ref_type == 'tag'
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows
+          path: dist
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*.zip
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.zip dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist/*.zip dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag
+          fi

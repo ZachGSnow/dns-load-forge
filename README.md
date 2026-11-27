@@ -75,6 +75,17 @@ pip install .            # or: pip install -e .  while developing
 dnsloadforge --version
 ```
 
+**On Windows without Python**, download `DNS-Load-Forge-<version>-windows-x64.zip` from
+the [latest release](https://github.com/ZachGSnow/dns-load-forge/releases/latest), unzip it
+somewhere you can write to, and double-click `dnsloadforge.exe`: the dashboard opens on the
+built-in mock, so everything can be tried safely, and the command line works as documented
+here (`.\dnsloadforge.exe --server 10.0.0.10`). The folder is portable: the domain lists and
+the run history are kept beside the executable. The build is not code-signed, so check it
+first: compare `Get-FileHash` with `SHA256SUMS` on the release, and `gh attestation verify
+<zip> --repo ZachGSnow/dns-load-forge` proves GitHub Actions built it from this source.
+SmartScreen may warn on first start; Smart App Control, where it is turned on, blocks
+unsigned programs outright, so use Python there.
+
 Fetched domain lists are cached in `lists/cache/` inside a checkout, or in
 `%LOCALAPPDATA%\dnsloadforge` / `~/.cache/dnsloadforge` for an installed copy. Set
 `DNSLOADFORGE_CACHE` to put them anywhere else.
@@ -559,7 +570,7 @@ full 10,000 qps soak.
 python -m unittest discover -s tests -t tests -v
 ```
 
-419 tests, no network access required. The ones that matter most are the seven
+429 tests, no network access required. The ones that matter most are the seven
 end-to-end verdict scenarios in `tests/test_engine.py`, which drive real UDP at a real
 mock appliance and assert that an honest filter is reported as `filtering` **while** a
 passthrough, overblocking and lossy filter each produce a different, correct verdict.
