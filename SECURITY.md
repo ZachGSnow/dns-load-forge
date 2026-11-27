@@ -47,6 +47,10 @@ reachable only from the machine that runs it:
   client's, are left out. The run history itself (`history.jsonl`) names the targets you
   tested; `--no-history` keeps none, and *Clear* on the Compare page deletes it.
 
+`/metrics` is read-only, but it is served by the same unauthenticated server, so scrape it
+from the machine running the tool rather than binding the dashboard to the network for a
+remote Prometheus: `--allow-remote-dashboard` would expose the Start button too.
+
 If you put it behind a reverse proxy, add authentication there.
 
 ## Reporting a problem

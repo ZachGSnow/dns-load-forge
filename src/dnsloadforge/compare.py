@@ -72,6 +72,10 @@ def summarise_run(snapshot: dict, config: RunConfig, *, index: int = 0) -> dict:
         "blocked": blocked,
         "leaked": leaked,
         "false_positives": harmed,
+        # Shares an operator sets limits on: SERVFAIL among answers, and intended
+        # queries the generator never sent.
+        "servfail_pct": round(100.0 * snapshot.get("rcodes", {}).get("SERVFAIL", 0) / max(totals.get("received", 0), 1), 3),
+        "dropped_pct": rates.get("dropped_pct", 0.0),
         # How this target signals a block, so filters can be compared on what users
         # will actually see: an NXDOMAIN, a block page, a refusal.
         "block_signals": dict(snapshot.get("block_signals", {})),

@@ -35,6 +35,7 @@ from . import __version__
 from .compare import format_comparison, summarise_run
 from .domainlist import DomainCatalogue, default_cache_dir, load_catalogue
 from .engine import detect_local_ip, run_threaded
+from .gates import DEFAULT_ASSERTIONS, METRICS, evaluate, format_results, junit_xml, parse_assertion
 from .history import HISTORY_FILE, HistoryStore, default_data_dir
 from .mockappliance import SCENARIOS, MockAppliance
 from .profiles import ROLES
@@ -322,6 +323,30 @@ def _add_results_args(parser: argparse.ArgumentParser, *, report: bool = False) 
             metavar="PATH",
             help="when the run ends, write a self-contained HTML report of it to PATH (prints to PDF)",
         )
+        results.add_argument(
+            "--assert",
+            dest="assertions",
+            action="append",
+            default=[],
+            type=_assertion,
+            metavar="EXPR",
+            help="a limit each run must meet, such as p95<=50, block_rate>=95 or verdict==filtering; repeatable. "
+            f"The run exits 1 if one fails. Metrics: {', '.join(METRICS)}",
+        )
+        results.add_argument(
+            "--junit",
+            default=None,
+            metavar="PATH",
+            help="write the assertions' results as JUnit XML for CI (with no --assert, the verdict is checked)",
+        )
+
+
+def _assertion(text: str):
+    """--assert, parsed as it is read, so a typo fails before any traffic is sent."""
+    try:
+        return parse_assertion(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
 
 
 def _add_common_run_args(
@@ -1236,6 +1261,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     summary = controller.summary()
     print_summary(summary, as_json=args.json)
     _write_report(args, controller.report_html)
+    failed = _check_gates(args, controller.session_history())
 
     if len(controller.history) > 1 and not getattr(args, "json", False):
         print()
@@ -1254,7 +1280,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             time.sleep(1)
     except KeyboardInterrupt:
         pass
-    return 0 if not summary.get("error") else 1
+    return 1 if summary.get("error") or failed else 0
 
 
 def _run_headless(
@@ -1318,6 +1344,7 @@ def _run_headless(
     }
     print_summary(summary, as_json=args.json)
     record = summarise_run(snapshot, config, index=1)
+    record["achieved_qps"] = summary["achieved_qps"]
     _save_history(args, [record])
     _write_report(
         args,
@@ -1325,11 +1352,12 @@ def _run_headless(
             snapshot, config, history=[record], lists=_lists_info(catalogue), achieved_qps=summary["achieved_qps"]
         ),
     )
+    failed = _check_gates(args, [record])
     if mock is not None:
         if not getattr(args, "json", False):
             print(f"  mock appliance counters: {mock.stats}")
         mock.stop()
-    return 0
+    return 1 if failed else 0
 
 
 def _run_headless_compare(
@@ -1365,6 +1393,7 @@ def _run_headless_compare(
             break
         last = (stats.snapshot(), run_config, sum(r.achieved_qps for r in results))
         summaries.append(summarise_run(last[0], run_config, index=index + 1))
+        summaries[-1]["achieved_qps"] = round(last[2], 1)
 
     if getattr(args, "json", False):
         print(json.dumps({"runs": summaries}, indent=2, default=str))
@@ -1381,7 +1410,36 @@ def _run_headless_compare(
                 snapshot, run_config, history=summaries, lists=_lists_info(catalogue), achieved_qps=achieved
             ),
         )
-    return 0
+    return 1 if _check_gates(args, summaries) else 0
+
+
+def _check_gates(args: argparse.Namespace, records: Sequence[dict]) -> bool:
+    """Check --assert against each finished run, print the results and write
+    --junit.  True when an assertion failed, or when no run finished to check."""
+    assertions = list(getattr(args, "assertions", None) or [])
+    junit = getattr(args, "junit", None)
+    if not assertions and not junit:
+        return False
+    assertions = assertions or list(DEFAULT_ASSERTIONS)
+    # Under --json stdout is the report and nothing else.
+    out = sys.stderr if getattr(args, "json", False) else sys.stdout
+    runs = [(record, evaluate(assertions, record)) for record in records]
+    results = [result for _record, outcome in runs for result in outcome]
+    if results:
+        print(file=out)
+        print(format_results(results), file=out)
+    else:
+        print(file=out)
+        print("  No run finished, so the assertions could not be checked.", file=out)
+    if junit:
+        try:
+            destination = Path(junit)
+            if destination.parent != Path(""):
+                destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(junit_xml(runs), encoding="utf-8")
+        except OSError as exc:
+            print(f"  could not write the JUnit results to {junit}: {exc}", file=sys.stderr)
+    return not results or any(not result.passed for result in results)
 
 
 def _history_path(args: argparse.Namespace) -> Path | None:

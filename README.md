@@ -322,7 +322,7 @@ and `POST /api/control` starts and stops runs (`{"action":"start","target":"Quad
 `{"action":"compare","targets":[...],"duration_s":60}`,
 `{"action":"capacity","target":"...","max_qps":20000}`, `{"action":"stop"}`). `GET
 /api/history` returns the finished runs (`POST /api/history/clear` forgets them), `GET /api/capacity` the
-capacity search, `GET /report` the printable report, and `/api/sources` with `POST
+capacity search, `GET /report` the printable report, `GET /metrics` Prometheus metrics, and `/api/sources` with `POST
 /api/sources/refresh` and `/api/sources/enabled` manage the domain lists. The per-query
 evidence is downloadable as CSV, JSONL or JSON.
 
@@ -347,6 +347,41 @@ from earlier sessions, which may have been another client's network, never appea
 `DNSLOADFORGE_DATA` moves it. The last 50 fill the Compare table when the dashboard starts
 again, so a comparison can span days. **Clear** on the Compare page empties it, and
 `--no-history` neither reads nor saves it.
+
+## Gates and monitoring
+
+**Assertions.** `--assert` turns a run into a test: each expression is checked against the
+run when it ends, the results are printed, and the process exits 1 if one fails, so a
+nightly job notices when a filter update starts blocking the sign-in page or slows every
+answer down. In a comparison, each target is checked.
+
+```bash
+python -m dnsloadforge --server 10.0.0.10 --qps 2000 --duration 300 --no-dashboard \
+  --assert "block_rate>=95" --assert "false_positives==0" --assert "p95<=50" --junit results.xml
+```
+
+| Metric | Meaning |
+|---|---|
+| `block_rate`, `false_block_rate` | % of block-listed queries blocked; % of allow-listed queries wrongly blocked |
+| `leaked`, `false_positives`, `timeouts` | counts |
+| `loss`, `servfail`, `dropped` | % of queries sent that timed out or failed; % of answers that were SERVFAIL; % of intended queries never sent |
+| `p50`, `p95`, `p99` | latency over the run, in ms |
+| `achieved_qps` | the rate actually sent |
+| `verdict` | `filtering`, `baseline`, `degraded`, `passthrough` or `unknown` (with `==` or `!=`) |
+
+An expression is checked as the arguments are read, so a typo fails before any traffic is
+sent; a value the run did not measure (a block rate for a target that blocks nothing) fails
+rather than passing by default. `--junit PATH` writes JUnit XML, one test suite per target,
+for any CI system; with no `--assert` it checks that the verdict is `filtering` or
+`baseline`. With `--json` the assertion table goes to stderr, so stdout stays valid JSON.
+
+**Metrics.** `GET /metrics` on the dashboard serves the run in progress in Prometheus'
+text format: queries, answers, timeouts and drops, outcomes, response codes, how blocks
+were signalled, Extended DNS Errors, latency percentiles, the rate, the connection pool and
+the verdict. The counters are the current run's and restart with each run, which
+Prometheus handles as a counter reset. The dashboard answers on `127.0.0.1` only, so scrape
+it from the same machine (a local Prometheus or agent); see [SECURITY.md](SECURITY.md)
+before exposing it.
 
 ## Reading the verdict
 
@@ -524,7 +559,7 @@ full 10,000 qps soak.
 python -m unittest discover -s tests -t tests -v
 ```
 
-404 tests, no network access required. The ones that matter most are the seven
+419 tests, no network access required. The ones that matter most are the seven
 end-to-end verdict scenarios in `tests/test_engine.py`, which drive real UDP at a real
 mock appliance and assert that an honest filter is reported as `filtering` **while** a
 passthrough, overblocking and lossy filter each produce a different, correct verdict.
