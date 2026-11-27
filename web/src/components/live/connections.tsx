@@ -74,7 +74,7 @@ export function ConnectionsCard({ snapshot }: { snapshot: Snapshot | null }) {
         </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-6">
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-3 @lg/main:grid-cols-3 @2xl/main:grid-cols-6">
           {cells.map((cell) => (
             <div
               key={cell.label}

@@ -54,7 +54,7 @@ export function LatencyCard({
     p95: Math.round(num(point.p95) * 10) / 10,
   }))
   return (
-    <Card className="lg:col-span-2">
+    <Card className="@2xl/main:col-span-2">
       <CardHeader>
         <CardTitle>Response latency</CardTitle>
         <CardDescription>
@@ -64,7 +64,7 @@ export function LatencyCard({
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+        <div className="grid grid-cols-3 gap-2 @lg/main:grid-cols-6">
           <Stat label="p50 ms" value={latency.p50} />
           <Stat
             label="p95 ms"

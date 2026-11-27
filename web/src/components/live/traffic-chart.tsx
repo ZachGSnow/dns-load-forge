@@ -89,7 +89,7 @@ export function TrafficChart({ series }: { series: SeriesPoint[] }) {
   const anyFalse = data.some((point) => num(point.fp) > 0 || num(point.fn) > 0)
 
   return (
-    <Card className="lg:col-span-2">
+    <Card className="@2xl/main:col-span-2">
       <CardHeader>
         <CardTitle>Live traffic</CardTitle>
         <CardDescription>

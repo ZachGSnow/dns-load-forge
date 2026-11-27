@@ -131,7 +131,7 @@ export function RunSetup() {
         </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div className="grid items-start gap-3 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <div className="grid items-start gap-3 @2xl/main:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
           <Field>
             <FieldLabel htmlFor="run-target">Test against</FieldLabel>
             <Select
@@ -201,7 +201,7 @@ export function RunSetup() {
             />
             <FieldDescription>0 runs until you press Stop.</FieldDescription>
           </Field>
-          <div className="flex gap-2 md:pt-6">
+          <div className="flex gap-2 @2xl/main:pt-6">
             {run.running ? (
               <Button
                 variant="destructive"
@@ -223,7 +223,7 @@ export function RunSetup() {
           </div>
         </div>
         <Separator />
-        <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4 xl:grid-cols-8">
+        <dl className="grid grid-cols-2 gap-x-6 gap-y-3 @lg/main:grid-cols-4 @4xl/main:grid-cols-8">
           <Detail
             label="Target"
             mono={false}

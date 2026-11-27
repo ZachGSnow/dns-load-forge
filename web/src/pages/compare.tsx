@@ -221,7 +221,7 @@ function ResultCharts({ runs }: { runs: HistoryRun[] }) {
     </div>
   )
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
+    <div className="grid gap-6 @3xl/main:grid-cols-2">
       {chart(
         "block",
         "Block rate",
@@ -284,7 +284,7 @@ export function ComparePage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-3 @lg/main:grid-cols-2 @4xl/main:grid-cols-3">
             {run.targets.map((target) => (
               <TargetPick
                 key={target.name}

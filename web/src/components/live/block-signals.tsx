@@ -42,7 +42,7 @@ export function BlockSignalsCard({ snapshot }: { snapshot: Snapshot | null }) {
           the Extended DNS Errors (RFC 8914) the filter used to say it blocked.
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-6 lg:grid-cols-3">
+      <CardContent className="grid gap-6 @2xl/main:grid-cols-3">
         <Section title={`Blocked answers (${fmtInt(total)})`}>
           {rows.length ? (
             <ul className="flex flex-col gap-2.5">
