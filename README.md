@@ -248,7 +248,7 @@ it is modelled explicitly rather than smoothed away.
 | Allow - enterprise/breakage | must resolve | curated: M365 sign-in, Windows Update, CRL/OCSP, AD `_srv._tcp` names, CDNs |
 | Borderline - trackers/CDN | reported, **never judged** | Block List Project tracking |
 | Block - ads | must block | Block List Project ads, StevenBlack unified |
-| Block - malware | must block | URLhaus, Block List Project malware |
+| Block - malware | must block | URLhaus (via the malware-filter mirror), Block List Project malware |
 | Block - phishing | must block | Phishing Army, Block List Project phishing + scam |
 | Block - adult | must block | Block List Project porn |
 | NXDOMAIN probe | must not exist | generated at runtime (DGA-like names) |

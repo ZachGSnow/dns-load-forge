@@ -1,0 +1,11 @@
+# Title: Malicious Hosts Blocklist
+# Updated: 2026-11-26T12:09:04Z
+# Expires: 12 hours (update frequency)
+# Homepage: https://gitlab.com/malware-filter/urlhaus-filter
+# License: https://gitlab.com/malware-filter/urlhaus-filter#license
+# Source: https://urlhaus.abuse.ch/api/
+0.0.0.0 0.203.0.113.host.example.net
+0.0.0.0 02teste.example
+0.0.0.0 035bc-ff4b-4cab-bca6-2b633b15def0.example.org
+0.0.0.0 0rder-ver1f2345.example.com
+0.0.0.0 10.0.0.64.host.example.net

@@ -154,6 +154,28 @@ class TestParsers(unittest.TestCase):
             ],
         )
 
+    def test_the_urlhaus_mirror_format(self) -> None:
+        """abuse.ch's own exports need an Auth-Key since October 2026 (the old URL
+        answers 410 Gone), so URLhaus data comes from the malware-filter mirror. Its
+        names can start with IP-like labels, which must survive as names."""
+        self.assertEqual(
+            dl.parse_payload(fixture("urlhaus_filter_hosts.txt"), "hosts"),
+            [
+                "0.203.0.113.host.example.net",
+                "02teste.example",
+                "035bc-ff4b-4cab-bca6-2b633b15def0.example.org",
+                "0rder-ver1f2345.example.com",
+                "10.0.0.64.host.example.net",
+            ],
+        )
+
+    def test_no_source_points_at_a_retired_abuse_ch_export(self) -> None:
+        sources = json.loads((pathlib.Path(dl.__file__).with_name("sources.json")).read_text(encoding="utf-8"))
+        entries = sources["sources"] if isinstance(sources, dict) else sources
+        for entry in entries:
+            with self.subTest(source=entry.get("slug")):
+                self.assertNotIn("urlhaus.abuse.ch/downloads/", entry.get("url", ""))
+
     def test_plain_format_including_abp_lines_and_debris(self) -> None:
         self.assertEqual(
             dl.parse_payload(fixture("plain_domains.txt"), "plain"),
