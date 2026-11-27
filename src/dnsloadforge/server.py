@@ -316,6 +316,11 @@ class RunController:
         with self._lock:
             return {"runs": list(self.history)}
 
+    def session_history(self) -> list[dict]:
+        """The runs that finished since this dashboard started."""
+        with self._lock:
+            return [run for run in self.history if float(run.get("finished_at") or 0) >= self._session_started]
+
     def clear_history(self) -> dict:
         problem = self._history_store.clear()
         if problem:
@@ -329,8 +334,8 @@ class RunController:
         comparison, capacity search and checks when there are any."""
         from .report import render_report
 
+        history = self.session_history()
         with self._lock:
-            history = [run for run in self.history if float(run.get("finished_at") or 0) >= self._session_started]
             checks = dict(self._checks) if self._checks.get("state") == "done" else None
             capacity = dict(self._capacity) if self._capacity.get("steps") else None
             last = self._last_run
@@ -583,6 +588,10 @@ class RunController:
         if not failed:
             snapshot = self.stats.snapshot()
             summary = summarise_run(snapshot, config, index=run_index)
+            # The engine's own rate over the sending window, not one diluted by the drain.
+            achieved = sum(r.achieved_qps for r in self._results)
+            if achieved:
+                summary["achieved_qps"] = round(achieved, 1)
             with self._lock:
                 self.history.append(summary)
                 del self.history[:-HISTORY_LIMIT]
@@ -1117,6 +1126,13 @@ class _Handler(BaseHTTPRequestHandler):
                 self._serve_notices()
             elif route == "/api/checks":
                 self._send_json(self.controller.checks_payload())
+            elif route == "/metrics":
+                from .metrics import CONTENT_TYPE, render_metrics
+
+                body = render_metrics(
+                    self.controller.snapshot(), running=self.controller.running, config=self.controller.config
+                )
+                self._send(HTTPStatus.OK, body.encode("utf-8"), CONTENT_TYPE)
             elif route == "/report":
                 stamp = time.strftime("%Y%m%d-%H%M")
                 self._send(

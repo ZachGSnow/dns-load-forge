@@ -26,6 +26,8 @@ src/dnsloadforge/
   capacity.py        capacity search: ramp, refine, and judge each step against the limits
   history.py         finished runs kept across restarts (history.jsonl)
   report.py          the session as one printable, script-free HTML page
+  gates.py           --assert limits on a run, and their JUnit XML
+  metrics.py         the run in progress in Prometheus' text format, at /metrics
   dashboard/index.html  the front end: built from web/ into one self-contained file
   dashboard/THIRD_PARTY_NOTICES.txt  licenses of the libraries bundled into that page
 web/                       the dashboard's source: React, Tailwind CSS, shadcn/ui, Recharts
@@ -36,7 +38,7 @@ scripts/
   Invoke-DnsLoadForge.ps1   PowerShell front end
   New-LabSourceIPs.ps1      create/remove the source-IP pool (elevated)
   Get-DnsLoadForgeCapture.ps1  pktmon wire capture + reconcile (elevated)
-tests/                     404 tests; no network required
+tests/                     419 tests; no network required
 runs/                      per-query record logs (gitignored)
 lists/cache/               fetched domain lists in a checkout (gitignored); a pip install uses
                            %LOCALAPPDATA%\dnsloadforge or ~/.cache/dnsloadforge instead
@@ -286,6 +288,18 @@ line cut short by a crash), which is what lets a comparison span days; but a con
 testing one client's filter in the morning and another's in the afternoon must not hand the
 second client the first one's results, so the report filters the history to runs that
 finished after the dashboard started.
+
+### Gates fail closed
+
+`gates.py` checks `--assert` expressions against the same per-run summary the comparison
+table shows (`compare.summarise_run`), so a limit means the same thing headless, in a
+comparison and in the dashboard. Every way a gate could pass by accident fails instead: an
+expression is parsed while the arguments are read, so a typo stops the command before any
+traffic; a value the run did not measure fails rather than counting as met; and a session
+in which no run finished fails its assertions, because "nothing to check" must not read as
+green. `metrics.py` renders the live snapshot in Prometheus' text format with base units
+(seconds) and escaped label values; its counters are per run, which Prometheus sees as an
+ordinary counter reset.
 
 ### Deployment checks are single queries with evidence
 
