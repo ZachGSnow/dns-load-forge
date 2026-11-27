@@ -38,7 +38,7 @@ from .engine import detect_local_ip, run_threaded
 from .mockappliance import SCENARIOS, MockAppliance
 from .profiles import ROLES
 from .server import DEFAULT_HOST, DEFAULT_PORT, COMPARE_COOLDOWN_S, _is_loopback, serve
-from .spec import CATEGORY_EXPECTED, Category, RunConfig
+from .spec import CATEGORY_EXPECTED, DEFAULT_PORTS, TRANSPORT_LABELS, TRANSPORTS, Category, RunConfig
 from .stats import StatsAggregator
 from .targets import (
     BLOCK_CATEGORIES,
@@ -49,6 +49,7 @@ from .targets import (
     load_targets,
     public_target_problem,
 )
+from .transports import Endpoint, parse_doh_url, probe
 
 __all__ = ["main", "build_parser"]
 
@@ -60,8 +61,28 @@ PUBLIC_RESOLVERS = frozenset(
         "8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9", "149.112.112.112",
         "208.67.222.222", "208.67.220.220", "64.6.64.6", "64.6.65.6", "77.88.8.8",
         "94.140.14.14", "94.140.15.15", "76.76.2.0", "185.228.168.9", "156.154.70.1",
+        # The filtered variants of the same services.
+        "1.1.1.2", "1.0.0.2", "1.1.1.3", "1.0.0.3", "208.67.222.123", "208.67.220.123",
+        "9.9.9.10", "9.9.9.11", "149.112.112.10", "149.112.112.11", "94.140.14.15", "94.140.15.16",
     }
 )
+
+#: The same services by the names their DoH and DoT certificates carry, so the
+#: guard holds when a run is aimed at a URL rather than an address.
+PUBLIC_RESOLVER_NAMES = frozenset(
+    {
+        "dns.google", "dns.google.com", "cloudflare-dns.com", "one.one.one.one",
+        "security.cloudflare-dns.com", "family.cloudflare-dns.com", "dns.quad9.net",
+        "dns9.quad9.net", "dns10.quad9.net", "dns11.quad9.net", "doh.opendns.com",
+        "doh.familyshield.opendns.com", "dns.adguard-dns.com", "family.adguard-dns.com",
+        "unfiltered.adguard-dns.com", "dns.nextdns.io", "doh.cleanbrowsing.org",
+    }
+)
+
+
+def is_public_resolver(server: str, tls_name: str = "") -> bool:
+    """A well-known public resolver, by address or by certificate name."""
+    return server in PUBLIC_RESOLVERS or server.lower() in PUBLIC_RESOLVER_NAMES or tls_name.lower() in PUBLIC_RESOLVER_NAMES
 
 COMMANDS = ("run", "serve", "lists", "targets", "mock", "bench", "doctor", "checks")
 
@@ -171,7 +192,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser("doctor", help="check readiness on this machine")
     doctor.add_argument("--server", default="")
-    doctor.add_argument("--port", type=int, default=53)
+    doctor.add_argument("--port", type=int, default=None, help=_PORT_HELP)
+    _add_transport_args(doctor)
     doctor.add_argument("--target", default=None, help="check a named target instead of --server")
     doctor.add_argument("--targets", default=None, help="targets file (default: ./targets.json if present)")
     doctor.add_argument("--source-ips-file", default=None)
@@ -189,7 +211,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     checks.add_argument("--server", default=None, help="resolver or appliance to check")
-    checks.add_argument("--port", type=int, default=53)
+    checks.add_argument("--port", type=int, default=None, help=_PORT_HELP)
+    _add_transport_args(checks)
     checks.add_argument("--target", action="append", default=None, help="a named target (see `targets`)")
     checks.add_argument("--targets", default=None, help="targets file (default: ./targets.json if present)")
     checks.add_argument("--target-kind", choices=TARGET_KINDS, default=None)
@@ -206,6 +229,43 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_PORT_HELP = "port on the target (default: 53; 853 for tls, 443 for https)"
+
+
+def _add_transport_args(group) -> None:
+    """How queries reach a bare --server, and how its certificate is checked."""
+    group.add_argument(
+        "--transport",
+        choices=TRANSPORTS,
+        default=None,
+        help="udp (default), tcp, tls (DNS over TLS) or https (DNS over HTTPS); http is DoH without TLS, "
+        "for rehearsing on this machine",
+    )
+    group.add_argument(
+        "--doh-url",
+        default=None,
+        metavar="URL",
+        help="a DNS-over-HTTPS endpoint, such as https://dns.example/dns-query; --server can give its address",
+    )
+    group.add_argument(
+        "--tls-name",
+        default=None,
+        metavar="NAME",
+        help="the name on the server's certificate, when --server is an address (DoT, DoH)",
+    )
+    group.add_argument(
+        "--ca-file",
+        default=None,
+        metavar="PEM",
+        help="trust these CA certificates instead of the system's, for an appliance with its own CA",
+    )
+    group.add_argument(
+        "--insecure",
+        action="store_true",
+        help="do not check the server's certificate: still encrypted, but not authenticated",
+    )
+
+
 def _add_common_run_args(
     parser: argparse.ArgumentParser,
     duration_default: float = 60.0,
@@ -213,7 +273,8 @@ def _add_common_run_args(
 ) -> None:
     target = parser.add_argument_group("target")
     target.add_argument("--server", default=None, help="resolver or appliance to test (default: 127.0.0.1)")
-    target.add_argument("--port", type=int, default=53, help="DNS port on the target (default: 53)")
+    target.add_argument("--port", type=int, default=None, help=_PORT_HELP)
+    _add_transport_args(target)
     target.add_argument(
         "--target",
         action="append",
@@ -261,6 +322,13 @@ def _add_common_run_args(
     load = parser.add_argument_group("load shaping")
     load.add_argument("--threads", default="1", help="sending threads; 'auto' = one per CPU core (default: 1)")
     load.add_argument("--max-inflight", type=int, default=20_000, help="outstanding-query budget before the generator drops")
+    load.add_argument(
+        "--connections",
+        type=int,
+        default=0,
+        help="connections per thread for tcp, tls and https (default: 4 for tcp and tls; https sizes and grows "
+        "its pool to the rate)",
+    )
     load.add_argument("--qps-burst", type=float, default=1.0, help="multiplier for the synchronised burst (1.0 = off)")
     load.add_argument("--burst-period", type=float, default=60.0, help="seconds between synchronised bursts")
     load.add_argument("--burst-len", type=float, default=2.0, help="seconds each synchronised burst lasts")
@@ -396,12 +464,36 @@ def resolve_targets(args: argparse.Namespace) -> tuple[list[Target], list[Target
     if names:
         if server:
             raise ValueError("use either --server or --target, not both")
+        if any(getattr(args, flag, None) for flag in ("transport", "doh_url", "tls_name")):
+            raise ValueError(
+                "a named target carries its own transport; give --transport, --doh-url and --tls-name with "
+                "--server, or set them on the target in targets.json"
+            )
         chosen = [find_target(name, available) for name in names]
         return available, chosen
-    server = server or "127.0.0.1"
-    kind = getattr(args, "target_kind", None) or ("public" if server in PUBLIC_RESOLVERS else "appliance")
-    chosen = [adhoc_target(server, int(getattr(args, "port", 53)), kind)]
+    chosen = [_adhoc_from_args(args)]
     return [*chosen, *[t for t in available if t.name != chosen[0].name]], chosen
+
+
+def _adhoc_from_args(args: argparse.Namespace) -> Target:
+    """The target a bare --server (or --doh-url) describes."""
+    server = getattr(args, "server", None) or ""
+    transport = getattr(args, "transport", None) or "udp"
+    tls_name = getattr(args, "tls_name", None) or ""
+    port = getattr(args, "port", None)
+    path = "/dns-query"
+    url = getattr(args, "doh_url", None)
+    if url:
+        if getattr(args, "transport", None) not in (None, "https", "http"):
+            raise ValueError("--doh-url is DNS over HTTPS; leave --transport out, or set it to https")
+        transport, host, url_port, path = parse_doh_url(url)
+        if transport == "https" and not tls_name:
+            tls_name = host
+        server = server or host
+        port = url_port if port is None else port
+    server = server or "127.0.0.1"
+    kind = getattr(args, "target_kind", None) or ("public" if is_public_resolver(server, tls_name) else "appliance")
+    return adhoc_target(server, port, kind, transport=transport, tls_name=tls_name, doh_path=path)
 
 
 def catalogue_loader(args: argparse.Namespace):
@@ -447,7 +539,7 @@ def build_config(args: argparse.Namespace, target: Target | None = None) -> RunC
 
     config = RunConfig(
         server=getattr(args, "server", None) or "127.0.0.1",
-        port=int(getattr(args, "port", 53)),
+        port=int(getattr(args, "port", None) or DEFAULT_PORTS["udp"]),
         mode=mode,
         personas=int(getattr(args, "personas", 10_000)),
         target_qps=float(getattr(args, "qps", 5_000.0)),
@@ -463,6 +555,9 @@ def build_config(args: argparse.Namespace, target: Target | None = None) -> RunC
         categories=categories,
         export_path="",
         nsid=bool(getattr(args, "nsid", False)),
+        tls_verify=not getattr(args, "insecure", False),
+        ca_file=getattr(args, "ca_file", None) or "",
+        connections=max(0, int(getattr(args, "connections", 0) or 0)),
     )
     return target.apply(config)
 
@@ -526,10 +621,10 @@ def preflight(
         problems.append("--timeout must be greater than zero")
 
     mock_mode = bool(getattr(args, "mock", False))
-    if config.server in PUBLIC_RESOLVERS and not mock_mode:
+    if is_public_resolver(config.server, config.tls_name) and not mock_mode:
         if config.target_qps > 100 and not getattr(args, "allow_public_target", False):
             problems.append(
-                f"{config.server} is a public resolver, not your appliance. Driving it at "
+                f"{config.target} is a public resolver, not your appliance. Driving it at "
                 f"{config.target_qps:,.0f} qps is abuse of a third party's infrastructure and tells you "
                 f"nothing about your own filter. Target the appliance, or pass --mock to rehearse, "
                 f"or --allow-public-target if this really is your own service."
@@ -543,7 +638,7 @@ def preflight(
     # third target before refusing.
     if not mock_mode:
         for target in targets:
-            if target.server == config.server and target.server in PUBLIC_RESOLVERS:
+            if target.server == config.server and is_public_resolver(target.server, target.tls_name):
                 continue
             problem = public_target_problem(target, config.target_qps, getattr(args, "allow_public_target", False))
             if problem:
@@ -564,17 +659,23 @@ def preflight(
             return problems
 
     if not problems and not mock_mode:
-        if not probe_reachable(config):
+        reachable, why = probe_target(config)
+        if not reachable:
             problems.append(
-                f"nothing answered a DNS probe on {config.target}. Check that the appliance is listening, "
-                f"that the port is right, and that a firewall is not dropping you. Pass --mock to rehearse "
-                f"without an appliance."
+                f"nothing answered a DNS probe on {config.target}"
+                + (f": {why}" if why else "")
+                + ". Check that the appliance is listening, that the port is right, and that a firewall is not "
+                "dropping you. Pass --mock to rehearse without an appliance."
             )
 
     if not problems and not mock_mode:
         for target in list(targets)[1:]:
-            if target.server != config.server and not probe_reachable(RunConfig(server=target.server, port=target.port)):
-                problems.append(f"nothing answered a DNS probe on {target.server}:{target.port} ({target.name}).")
+            other = target.apply(config)
+            if other.target == config.target:
+                continue
+            reachable, why = probe_target(other)
+            if not reachable:
+                problems.append(f"nothing answered a DNS probe on {other.target} ({target.name}): {why or 'no answer'}.")
 
     total = catalogue.total()
     if total == 0:
@@ -604,29 +705,19 @@ def preflight(
     return problems
 
 
-def probe_reachable(config: RunConfig, attempts: int = 2, timeout: float = 1.5) -> bool:
-    """Send a real DNS query and wait for a real answer.
+def probe_target(config: RunConfig, attempts: int = 2, timeout: float = 1.5) -> tuple[bool, str]:
+    """Send a real DNS query over the run's transport and wait for a real answer:
+    ``(answered, why not)``.
 
     UDP gives no connection-refused signal on Linux and an inconsistent one on
     Windows, so the only honest readiness test is to ask a question and see
     whether an answer comes back.
     """
-    from .packets import encode_query
+    return probe(Endpoint.from_config(config), timeout=timeout, attempts=attempts)
 
-    for _ in range(max(1, attempts)):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(timeout)
-        try:
-            packet, _ = encode_query("example.com", "A")
-            sock.sendto(packet, (config.server, config.port))
-            data, _addr = sock.recvfrom(4096)
-            if data:
-                return True
-        except OSError:
-            continue
-        finally:
-            sock.close()
-    return False
+
+def probe_reachable(config: RunConfig, attempts: int = 2, timeout: float = 1.5) -> bool:
+    return probe_target(config, attempts=attempts, timeout=timeout)[0]
 
 
 def _local_addresses() -> list[str]:
@@ -657,6 +748,12 @@ def _local_addresses() -> list[str]:
 def print_banner(config: RunConfig, catalogue: DomainCatalogue, args: argparse.Namespace) -> None:
     print(f"DNS Load Forge {__version__}")
     print(f"  target          {config.target}  ({config.mode} mode, {config.threads} thread(s))")
+    if config.transport != "udp":
+        detail = ""
+        if config.transport in ("tls", "https"):
+            detail = ", certificate checked" if config.tls_verify else ", certificate NOT checked (--insecure)"
+        pool = f"{config.connections} connection(s)" if config.connections else "a connection pool"
+        print(f"  transport       {TRANSPORT_LABELS[config.transport]}{detail}; {pool} per thread")
     print(f"  simulated        {config.personas:,} workers across {len(config.source_ips) or 1} source IP(s)")
     print(f"  load            {config.target_qps:,.0f} qps for {config.duration_s:g}s"
           f" ({config.target_qps * max(config.duration_s, 0):,.0f} queries)")
@@ -806,7 +903,8 @@ def cmd_targets(args: argparse.Namespace) -> int:
         rows.append(
             (
                 target.name,
-                f"{target.server}:{target.port}",
+                target.endpoint,
+                TRANSPORT_LABELS[target.transport],
                 target.kind,
                 ", ".join(c.replace("block_", "") for c in blocks) or "(none - baseline)",
                 "preset" if target.builtin else "file",
@@ -814,7 +912,7 @@ def cmd_targets(args: argparse.Namespace) -> int:
         )
     print("Named targets (use with --target NAME; repeat --target to compare)")
     print()
-    _print_table(("name", "address", "kind", "expected to block", "from"), rows)
+    _print_table(("name", "endpoint", "via", "kind", "expected to block", "from"), rows)
     print()
     print("  Presets describe each service's published behaviour -- check it against current")
     print("  documentation before relying on a verdict. Add your own in targets.json.")
@@ -822,9 +920,13 @@ def cmd_targets(args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
+    target: Target | None = None
     if getattr(args, "target", None):
         target = find_target(args.target, load_targets(getattr(args, "targets", None)))
-        args.server, args.port = target.server, target.port
+        args.server = target.server
+    elif args.server or getattr(args, "doh_url", None):
+        target = _adhoc_from_args(args)
+        args.server = target.server
     findings: list[tuple[str, str, str]] = []
 
     def add(check: str, status: str, detail: str) -> None:
@@ -863,16 +965,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         except ValueError as exc:
             add("source IP pool", "fail", str(exc))
 
-    if args.server:
-        config = RunConfig(server=args.server, port=args.port)
-        reachable = probe_reachable(config)
+    if target is not None:
+        config = target.apply(RunConfig(tls_verify=not args.insecure, ca_file=args.ca_file or ""))
+        reachable, why = probe_target(config)
         add(
             "target",
             "ok" if reachable else "fail",
-            f"{config.target} answered a test query" if reachable else f"{config.target} did not answer; check address, port and firewall",
+            f"{config.target} answered a test query"
+            if reachable
+            else f"{config.target} did not answer: {why or 'check address, port and firewall'}",
         )
-        if args.server in PUBLIC_RESOLVERS:
-            add("target", "warn", f"{args.server} is a public resolver, not an appliance under test")
+        if is_public_resolver(target.server, target.tls_name):
+            add("target", "warn", f"{target.name} is a public resolver, not an appliance under test")
 
     try:
         import psutil  # type: ignore
@@ -934,25 +1038,49 @@ def _setup_mock(args: argparse.Namespace, catalogue: DomainCatalogue, config: Ru
     if not getattr(args, "mock", False):
         return None
     mock = _start_mock(args, catalogue)
+    # The mock answers UDP and TCP on one port and DoH over plain HTTP on another.
+    # It has no certificate, so DoT is rehearsed as TCP and DoH without the TLS.
+    wanted = config.transport
+    variant = _MOCK_VARIANTS.get(wanted, "")
     config.server = mock.host
-    config.port = mock.port
-    # Name what it will actually do: an overblocking "good" mock is not a good filter.
-    behaviour = "overblocking" if getattr(args, "mock_overblock", False) else args.mock_scenario
-    config.target_name = f"Mock appliance ({behaviour})"
+    config.tls_name = ""
+    if wanted in ("https", "http"):
+        config.transport, config.port, config.doh_path = "http", mock.doh_port or 0, "/dns-query"
+    else:
+        config.transport = "tcp" if wanted in ("tcp", "tls") else "udp"
+        config.port = mock.port
+    config.target_name = _mock_name(args) + variant
+    if wanted in ("tls", "https") and not getattr(args, "json", False):
+        print(f"  the mock has no certificate, so {TRANSPORT_LABELS[wanted]} is rehearsed as {TRANSPORT_LABELS[config.transport]}")
     _wait_for_mock(mock)
     return mock
 
 
+#: What the mock targets are called, by the transport they rehearse.
+_MOCK_VARIANTS = {"udp": "", "tcp": " over TCP", "tls": " over TCP", "https": " over DoH", "http": " over DoH"}
+
+
+def _mock_name(args: argparse.Namespace) -> str:
+    # Name what it will actually do: an overblocking "good" mock is not a good filter.
+    behaviour = "overblocking" if getattr(args, "mock_overblock", False) else args.mock_scenario
+    return f"Mock appliance ({behaviour})"
+
+
 def _with_mock_target(
-    available: list[Target], original: Target, mock: MockAppliance, config: RunConfig
+    available: list[Target], original: Target, mock: MockAppliance, config: RunConfig, args: argparse.Namespace
 ) -> list[Target]:
-    """Put the mock first in the dashboard's target list.  A bare ``--server`` default
-    that the mock replaced is dropped, so the picker does not offer a target nobody
-    asked for; a named ``--target`` is kept."""
-    mock_target = adhoc_target(mock.host, mock.port)
-    mock_target.name = config.target_name
+    """Put the mock first in the dashboard's target list, once per transport it
+    answers, so UDP, TCP and DoH can be compared on it.  A bare ``--server``
+    default that the mock replaced is dropped, so the picker does not offer a
+    target nobody asked for; a named ``--target`` is kept."""
+    base = _mock_name(args)
+    mocks = [Target(name=base, server=mock.host, port=mock.port)]
+    if mock.tcp_port:
+        mocks.append(Target(name=f"{base} over TCP", server=mock.host, port=mock.tcp_port, transport="tcp"))
+    if mock.doh_port:
+        mocks.append(Target(name=f"{base} over DoH", server=mock.host, port=mock.doh_port, transport="http"))
     kept = [t for t in available if not (t is original and not t.builtin and t.name == original.name)]
-    return [mock_target, *kept]
+    return [*mocks, *kept]
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -963,7 +1091,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     mock = _setup_mock(args, catalogue, config)
     if mock is not None:
-        available = _with_mock_target(available, chosen[0], mock, config)
+        available = _with_mock_target(available, chosen[0], mock, config, args)
         chosen = chosen[:1]
     # Under --json stdout is the report and nothing else, or anything consuming it
     # (a jq pipeline, a wrapper script) chokes on the chatter that precedes it.
@@ -1077,6 +1205,7 @@ def _run_headless(
     # --qps was, and --json emitted that same wrong number to whatever consumed it.
     stats.set_run(
         server=config.target,
+        transport=config.transport,
         mode=config.mode,
         personas=config.personas,
         source_ips=len(config.source_ips) or 1,
@@ -1139,6 +1268,7 @@ def _run_headless_compare(
         stats = StatsAggregator()
         stats.set_run(
             server=run_config.target,
+            transport=run_config.transport,
             target_name=run_config.target_name,
             mode=run_config.mode,
             personas=run_config.personas,
@@ -1182,6 +1312,7 @@ def _start_mock(args: argparse.Namespace, catalogue: DomainCatalogue) -> MockApp
         host="127.0.0.1",
         port=0,
         quiet=True,
+        doh_port=0,
     )
     appliance.start()
     return appliance
@@ -1238,7 +1369,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
         # the dashboard's 5-second average is a sampling of whole seconds.
         achieved = round(sum(r.achieved_qps for r in runs), 1)
         results[f"gen-{int(qps)}"] = {"target": qps, "achieved": achieved}
-        print(f"  {label:26s} target {qps:>7,.0f} qps -> achieved {achieved:>9,.0f} qps"
+        print(f"  {label:28s} target {qps:>7,.0f} qps -> achieved {achieved:>9,.0f} qps"
               f"  ({100.0 * achieved / qps:.0f}% of target)")
 
     # Stage two sends for real, against the built-in mock.  This is a *floor*, not a
@@ -1246,13 +1377,29 @@ def cmd_bench(args: argparse.Namespace) -> int:
     # bottleneck well before the sender does, so a falling number here says the
     # simulator could not keep up, not that the generator ran out of capacity.  The
     # drop percentage is the honest signal of who was struggling.
-    mock = MockAppliance(scenario="good", latency_ms=0.05, jitter_ms=0.0, port=0, quiet=True)
+    #
+    # --transport is honoured here too.  The mock has no certificate, so DoT is
+    # measured as TCP and DoH over plain HTTP: the framing and the connection pool,
+    # without the encryption.
+    wanted = getattr(args, "transport", None) or "udp"
+    transport = {"tls": "tcp", "https": "http"}.get(wanted, wanted)
+    via = {"tcp": ", TCP", "http": ", DoH"}.get(transport, "")
+    mock = MockAppliance(
+        scenario="good",
+        latency_ms=0.05,
+        jitter_ms=0.0,
+        port=0,
+        quiet=True,
+        doh_port=0 if transport == "http" else None,
+    )
     mock.start()
     try:
         for qps in (10_000.0, 20_000.0):
             config = RunConfig(
                 server=mock.host,
-                port=mock.port,
+                port=(mock.doh_port or 0) if transport == "http" else mock.port,
+                transport=transport,
+                connections=max(0, int(getattr(args, "connections", 0) or 0)),
                 personas=personas,
                 target_qps=qps,
                 duration_s=seconds,
@@ -1271,7 +1418,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
                 "target": qps, "achieved": achieved, "loss_pct": loss, "dropped_pct": dropped
             }
             note = f", {dropped:.0f}% sender drops" if dropped >= 0.5 else ""
-            print(f"  {'end-to-end (local mock)':26s} target {qps:>7,.0f} qps -> achieved {achieved:>9,.0f} qps"
+            print(f"  {'end-to-end (local mock' + via + ')':28s} target {qps:>7,.0f} qps -> achieved {achieved:>9,.0f} qps"
                   f"  ({100.0 * achieved / qps:.0f}% of target, {loss:.1f}% loss{note})")
     finally:
         mock.stop()
@@ -1393,10 +1540,17 @@ def cmd_checks(args: argparse.Namespace) -> int:
     if len(chosen) > 1:
         raise ValueError("checks run against one target at a time")
     target = chosen[0]
-    ctx = context_for_target(target, network=not args.no_network, timeout=args.timeout, cache_dir=args.cache_dir)
+    ctx = context_for_target(
+        target,
+        network=not args.no_network,
+        timeout=args.timeout,
+        cache_dir=args.cache_dir,
+        verify=not args.insecure,
+        ca_file=args.ca_file or "",
+    )
     quiet = getattr(args, "json", False)
     if not quiet:
-        print(f"DNS Load Forge {__version__} -- deployment checks against {target.name} ({target.server}:{target.port})")
+        print(f"DNS Load Forge {__version__} -- deployment checks against {target.name} ({target.endpoint})")
     results = run_checks(ctx, only=args.only)
     summary = summarise(results)
     if quiet:
@@ -1426,7 +1580,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     mock = _setup_mock(args, catalogue, config)
     if mock is not None:
-        available = _with_mock_target(available, chosen[0], mock, config)
+        available = _with_mock_target(available, chosen[0], mock, config, args)
         chosen = chosen[:1]
         print(f"mock appliance listening on {config.target} (scenario: {args.mock_scenario})")
 

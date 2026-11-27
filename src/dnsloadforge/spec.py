@@ -26,6 +26,10 @@ __all__ = [
     "RCODES",
     "RCODE_NAMES",
     "Transport",
+    "TRANSPORTS",
+    "TRANSPORT_LABELS",
+    "DEFAULT_PORTS",
+    "endpoint_label",
     "QueryRecord",
     "RunConfig",
     "LATENCY_BUCKETS_MS",
@@ -177,8 +181,50 @@ RCODE_BUCKETS: tuple[str, ...] = (
 
 
 class Transport(str, Enum):
+    """How queries travel to the target (see ``transports.py``)."""
+
     UDP = "udp"
     TCP = "tcp"
+    #: DNS over TLS (RFC 7858).
+    TLS = "tls"
+    #: DNS over HTTPS (RFC 8484), over HTTP/1.1.
+    HTTPS = "https"
+    #: DNS over HTTPS without the TLS: rehearsal against the mock on loopback only.
+    HTTP = "http"
+
+
+TRANSPORTS: tuple[str, ...] = tuple(t.value for t in Transport)
+
+#: The port each transport uses unless told otherwise.
+DEFAULT_PORTS: dict[str, int] = {"udp": 53, "tcp": 53, "tls": 853, "https": 443, "http": 80}
+
+#: Short names for reports and the dashboard.
+TRANSPORT_LABELS: dict[str, str] = {
+    "udp": "UDP",
+    "tcp": "TCP",
+    "tls": "DoT",
+    "https": "DoH",
+    "http": "DoH (plain HTTP)",
+}
+
+
+def endpoint_label(transport: str, server: str, port: int, tls_name: str = "", path: str = "/dns-query") -> str:
+    """How an endpoint is written in reports: ``10.0.0.5:53`` for UDP, as before,
+    and a URL for the others.  An address the certificate name does not show is
+    added in brackets: ``tls://dns.quad9.net:853 (9.9.9.9)``."""
+    if transport == "udp":
+        return f"{server}:{port}"
+    named = transport in ("tls", "https") and bool(tls_name)
+    host = tls_name if named else server
+    shown = f"[{host}]" if ":" in host else host
+    if transport in ("https", "http"):
+        suffix = "" if port == DEFAULT_PORTS[transport] else f":{port}"
+        label = f"{transport}://{shown}{suffix}{path}"
+    else:
+        label = f"{transport}://{shown}:{port}"
+    if named and tls_name != server:
+        label += f" ({server})"
+    return label
 
 
 #: Addresses that count as "sinkholed" rather than a real answer.  0.0.0.0 and
@@ -315,10 +361,28 @@ class RunConfig:
     #: Ask the target to name the server instance that answered (EDNS NSID,
     #: RFC 5001).  Off by default: it adds four bytes to every query.
     nsid: bool = False
+    #: How queries travel: one of :data:`TRANSPORTS`.  UDP is what an office mostly
+    #: sends; the others carry the same traffic over TCP, DNS over TLS or DNS over
+    #: HTTPS, so a filter can be judged on every road a client takes to it.
+    transport: str = "udp"
+    #: The name the server's certificate is checked against, sent as SNI and as the
+    #: DoH ``Host``.  Empty means ``server``.  Set it to connect to an address while
+    #: still checking the certificate's name.
+    tls_name: str = ""
+    #: Path of the DoH endpoint.
+    doh_path: str = "/dns-query"
+    #: Check the server's certificate.  Off only for a lab appliance whose
+    #: certificate nothing trusts (``--insecure``): still encrypted, not authenticated.
+    tls_verify: bool = True
+    #: A PEM bundle of the CAs to trust instead of the system's (``--ca-file``).
+    ca_file: str = ""
+    #: Connections per sending thread for TCP, DoT and DoH; 0 picks a default.
+    connections: int = 0
 
     @property
     def target(self) -> str:
-        return f"{self.server}:{self.port}"
+        """The endpoint as reports show it: ``10.0.0.5:53``, ``tls://...``, ``https://...``."""
+        return endpoint_label(self.transport, self.server, self.port, self.tls_name, self.doh_path)
 
     def expect_for(self, category: str) -> str:
         """What this run expects of ``category``, honouring the target's profile."""
@@ -400,7 +464,8 @@ class SinkholeSet:
 #     "state": "idle" | "running" | "stopped",
 #     "started_at": 1750000000.0,
 #     "elapsed_s": 42.0,
-#     "server": "10.1.106.5:53",
+#     "server": "10.1.106.5:53",     # RunConfig.target: a URL for TCP, DoT, DoH
+#     "transport": "udp" | "tcp" | "tls" | "https" | "http",
 #     "mode": "personas" | "pool",
 #     "personas": 10000,
 #     "source_ips": 1,
@@ -465,6 +530,12 @@ class SinkholeSet:
 #   "nsid": [                        # answering server instances (with --nsid)
 #     {"id": "res715.ord", "count": 1200}
 #   ],
+#   "connections": {                 # TCP, DoT and DoH runs only
+#     "open": 24, "opened": 26, "closed": 2, "lost": 1, "failed": 0,
+#     "retried": 3,                  # queries re-sent after a close under them
+#     "busy_drops": 0,               # queries dropped: every connection was busy
+#     "last_error": "the server closed a connection with queries unanswered"
+#   },
 #   "verdict": {
 #     "status": "idle" | "unknown" | "passthrough" | "filtering" | "degraded" | "baseline",
 #     "note": "human readable one-liner"

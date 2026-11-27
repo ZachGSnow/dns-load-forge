@@ -3,6 +3,7 @@ import * as React from "react"
 import { toast } from "sonner"
 
 import { useRun } from "@/components/run-context"
+import { TransportBadge } from "@/components/transport-badge"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -48,6 +49,7 @@ import { DEMO } from "@/lib/api"
 import { fmtDateTime, fmtMs } from "@/lib/format"
 import { fetchChecks, runChecks } from "@/lib/resources"
 import type { CheckResult, CheckStatus, ChecksPayload } from "@/lib/schema"
+import { endpointOf } from "@/lib/transport"
 import { cn } from "@/lib/utils"
 
 const STATUS_ORDER: CheckStatus[] = [
@@ -263,8 +265,9 @@ export function ChecksPage() {
                 {run.targets.map((t) => (
                   <SelectItem key={t.name} value={t.name}>
                     {t.name}
-                    <span className="font-mono text-xs text-muted-foreground">
-                      {t.server}
+                    <TransportBadge transport={t.transport} />
+                    <span className="truncate font-mono text-xs text-muted-foreground">
+                      {endpointOf(t)}
                     </span>
                   </SelectItem>
                 ))}
@@ -303,10 +306,11 @@ export function ChecksPage() {
       {results.length ? (
         <Card>
           <CardHeader>
-            <CardTitle>
+            <CardTitle className="flex flex-wrap items-center gap-2">
               {data?.target?.name ?? "Results"}
-              <span className="ml-2 font-mono text-sm font-normal text-muted-foreground">
-                {data?.target?.server}
+              <TransportBadge transport={data?.target?.transport} />
+              <span className="font-mono text-sm font-normal text-muted-foreground">
+                {endpointOf(data?.target)}
               </span>
             </CardTitle>
             <CardDescription>

@@ -14,8 +14,16 @@ addresses that come back. Even so:
   without sending anything, to see whether the network lets clients around the filter.
   `--no-network` leaves those out.
 * A resolver you do not own is somebody else's infrastructure. Public targets are held to
-  100 queries per second unless you pass `--allow-public-target`. Only test services you
-  are authorised to test, and ask a vendor before pushing hard on a shared service.
+  100 queries per second unless you pass `--allow-public-target`, whether they are named
+  by address or, for DNS over HTTPS and TLS, by the name on their certificate. Only test
+  services you are authorised to test, and ask a vendor before pushing hard on a shared
+  service.
+* Over DNS over TLS and HTTPS the server's certificate is checked against the system's
+  roots, or the CAs in `--ca-file`. `--insecure` turns the check off: the traffic is still
+  encrypted, but the server is not authenticated, so keep it for a lab appliance whose
+  certificate nothing trusts. DoH requests carry `User-Agent: DNS-Load-Forge/<version>`,
+  so the appliance's logs say what the traffic is, and DoH over plain HTTP is accepted only
+  for an address on this machine (the mock).
 
 ## The dashboard
 

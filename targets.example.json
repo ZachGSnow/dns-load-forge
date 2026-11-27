@@ -9,6 +9,14 @@
       "notes": "A filter in front of your own network: internal names such as corp.local are expected to resolve, and every block category is expected to be blocked."
     },
     {
+      "name": "Office DNS filter over DoH",
+      "url": "https://dns.corp.example/dns-query",
+      "server": "10.0.0.53",
+      "kind": "appliance",
+      "ca_file": "corp-root-ca.pem",
+      "notes": "The same filter over DNS over HTTPS, as browsers reach it. 'url' is the endpoint as the filter publishes it; 'server' connects to the address directly, so finding the filter does not depend on the DNS being tested; 'ca_file' trusts the company CA that issued its certificate. For DNS over TLS use \"transport\": \"tls\" with \"tls_name\" instead."
+    },
+    {
       "name": "Cloud filter trial (malware + phishing only)",
       "server": "203.0.113.10",
       "kind": "public",

@@ -83,7 +83,10 @@ class TestArgumentSurface(unittest.TestCase):
     def test_defaults_are_the_documented_ones(self) -> None:
         args = parse(["run"])
         self.assertEqual(args.personas, 10_000)
-        self.assertEqual(args.port, 53)
+        # The port follows the transport unless given: 53 for plain DNS.
+        self.assertIsNone(args.port)
+        self.assertEqual(cli.build_config(args).port, 53)
+        self.assertEqual(cli.build_config(parse(["run", "--transport", "tls"])).port, 853)
         self.assertEqual(args.mode, "personas")
         self.assertEqual(args.max_per_category, cli.DEFAULT_MAX_PER_CATEGORY)
         self.assertFalse(args.allow_public_target)
@@ -190,7 +193,7 @@ class TestGuards(unittest.TestCase):
 
     def setUp(self) -> None:
         self.catalogue = tiny_catalogue()
-        patch = mock.patch.object(cli, "probe_reachable", return_value=True)
+        patch = mock.patch.object(cli, "probe_target", return_value=(True, ""))
         patch.start()
         self.addCleanup(patch.stop)
 
@@ -241,7 +244,7 @@ class TestCommandWiring(unittest.TestCase):
     def setUp(self) -> None:
         self.catalogue = tiny_catalogue()
         lists = mock.patch.object(cli, "_load_lists", return_value=self.catalogue)
-        probe = mock.patch.object(cli, "probe_reachable", return_value=True)
+        probe = mock.patch.object(cli, "probe_target", return_value=(True, ""))
         for patch in (lists, probe):
             patch.start()
             self.addCleanup(patch.stop)
@@ -351,6 +354,16 @@ class TestHelpers(unittest.TestCase):
         output = buffer.getvalue()
         self.assertEqual(code, 0)
         self.assertIn("1s per stage", output)
+
+    def test_bench_measures_the_requested_transport(self) -> None:
+        """--transport is in the shared option group, so bench must not drop it."""
+        args = parse(["bench", "--duration", "1", "--personas", "50", "--transport", "https"])
+        buffer = io.StringIO()
+        with mock.patch.object(cli, "load_catalogue", return_value=tiny_catalogue()):
+            with contextlib.redirect_stdout(buffer):
+                code = cli.cmd_bench(args)
+        self.assertEqual(code, 0)
+        self.assertIn("end-to-end (local mock, DoH)", buffer.getvalue())
 
     def test_print_table_handles_ragged_cell_widths(self) -> None:
         buffer = io.StringIO()

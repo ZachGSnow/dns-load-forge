@@ -4,6 +4,7 @@ import { Bar, BarChart, CartesianGrid, LabelList, XAxis, YAxis } from "recharts"
 
 import { useRun } from "@/components/run-context"
 import { VerdictBadge } from "@/components/status"
+import { TransportBadge } from "@/components/transport-badge"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -47,6 +48,7 @@ import { fmtFraction, fmtInt, fmtMs, fmtPct, fmtRate, num } from "@/lib/format"
 import { fetchHistory } from "@/lib/resources"
 import { dominantSignal } from "@/lib/signals"
 import type { HistoryRun, Target } from "@/lib/schema"
+import { endpointOf } from "@/lib/transport"
 
 const PUBLIC_QPS_LIMIT = 100
 const MIN_SECONDS = 10
@@ -93,10 +95,10 @@ function TargetPick({
           >
             {target.kind === "public" ? "public resolver" : "appliance"}
           </Badge>
+          <TransportBadge transport={target.transport} />
         </div>
-        <span className="font-mono text-xs text-muted-foreground">
-          {target.server}
-          {num(target.port, 53) !== 53 ? `:${target.port}` : ""}
+        <span className="font-mono text-xs break-all text-muted-foreground">
+          {endpointOf(target)}
         </span>
         <div className="flex flex-wrap gap-1">
           {blocks.length ? (
@@ -408,6 +410,7 @@ export function ComparePage() {
                         <TableCell className="pl-4">
                           <div className="flex items-center gap-2">
                             <span className="font-medium">{row.target}</span>
+                            <TransportBadge transport={row.transport} />
                             <span className="font-mono text-xs text-muted-foreground">
                               #{row.index}
                             </span>

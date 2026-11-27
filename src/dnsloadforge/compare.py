@@ -46,6 +46,7 @@ def summarise_run(snapshot: dict, config: RunConfig, *, index: int = 0) -> dict:
         "index": index,
         "target": config.target_name or config.target,
         "server": config.target,
+        "transport": config.transport,
         "finished_at": time.time(),
         "seed": config.seed,
         "personas": config.personas,

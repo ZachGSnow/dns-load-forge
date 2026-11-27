@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable, Sequence
 
 from . import packets as pk
+from .transports import Endpoint, TransportError, exchange
 
 __all__ = [
     "CHECKS",
@@ -93,6 +94,8 @@ class Exchange:
     ad: bool = False
     latency_ms: float = 0.0
     error: str = ""
+    #: The endpoint as reports show it, when the query went over TCP, DoT or DoH.
+    label: str = ""
 
     @property
     def answered(self) -> bool:
@@ -120,7 +123,7 @@ class Exchange:
 
     def as_dict(self) -> dict:
         return {
-            "server": f"{self.server}:{self.port}" if self.port != 53 else self.server,
+            "server": self.label or (f"{self.server}:{self.port}" if self.port != 53 else self.server),
             "qname": self.qname,
             "qtype": self.qtype if self.qclass == "IN" else f"{self.qclass} {self.qtype}",
             "rcode": self.rcode or "-",
@@ -192,12 +195,25 @@ def ask(
     timeout: float = 2.0,
     nsid: bool = False,
     dnssec_ok: bool = False,
+    via: Endpoint | None = None,
 ) -> Exchange:
-    """One query over UDP, retried over TCP when the answer comes back truncated."""
+    """One query over UDP, retried over TCP when the answer comes back truncated.
+    With ``via`` (a TCP, DoT or DoH endpoint) it goes that way instead."""
     options = [(pk.EDNS_NSID, b"")] if nsid else []
     query, qid = pk.encode_query(qname, qtype, qclass=qclass, dnssec_ok=dnssec_ok, options=options)
-    family = socket.AF_INET6 if ":" in server else socket.AF_INET
     started = time.perf_counter()
+    if via is not None and via.transport != "udp":
+        qclass_name = "CH" if qclass == pk.QCLASS_CH else "IN"
+        try:
+            message = pk.decode_message(exchange(via, query, timeout))
+        except TransportError as exc:
+            return Exchange(server, port, qname, qtype, qclass_name, error=str(exc), label=via.label)
+        except pk.DNSError as exc:
+            return Exchange(server, port, qname, qtype, qclass_name, error=f"malformed answer ({exc})", label=via.label)
+        result = _exchange(server, port, qname, qtype, qclass, message, (time.perf_counter() - started) * 1000.0)
+        result.label = via.label
+        return result
+    family = socket.AF_INET6 if ":" in server else socket.AF_INET
     try:
         with socket.socket(family, socket.SOCK_DGRAM) as sock:
             sock.settimeout(timeout)
@@ -316,8 +332,18 @@ class CheckContext:
     #: what each is a test of ("malware", "adult", ...).
     blocked_names: list[str] = field(default_factory=list)
     blocked_kinds: dict[str, str] = field(default_factory=dict)
+    #: The target's TCP, DoT or DoH endpoint; ``None`` asks it over UDP.  Only the
+    #: target's own queries go this way: the network checks ask public resolvers
+    #: on port 53, which is the road around the filter they are looking for.
+    via: Endpoint | None = None
+
+    @property
+    def label(self) -> str:
+        return self.via.label if self.via is not None else f"{self.server}:{self.port}"
 
     def query(self, qname: str, qtype: str = "A", **kwargs) -> Exchange:
+        if self.via is not None:
+            kwargs["via"] = self.via
         return self.ask(self.server, self.port, qname, qtype, timeout=self.timeout, **kwargs)
 
     def query_many(self, items: Sequence[tuple[str, str]], **kwargs) -> list[Exchange]:
@@ -378,10 +404,11 @@ def check_identity(ctx: CheckContext) -> CheckResult:
     chaos = [ctx.query(name, "TXT", qclass=pk.QCLASS_CH) for name in ("id.server", "hostname.bind", "version.bind")]
     evidence = [e.as_dict() for e in (probe, akamai, google, *chaos)]
     if not any(e.answered for e in (probe, akamai, google)):
+        reason = f" The first query failed: {probe.error}." if probe.error and probe.error != "no answer" else ""
         return CheckResult(
             "identity", "Resolver", "Who answers", "error",
-            f"{ctx.server}:{ctx.port} answered none of the identity queries.",
-            "Check the address and port, and that this machine is allowed to query it.",
+            f"{ctx.label} answered none of the identity queries.",
+            "Check the address and port, and that this machine is allowed to query it." + reason,
             evidence,
         )
     egress = _txt_value(akamai, "ns") or next(
@@ -806,16 +833,32 @@ def context_for_target(
     timeout: float = 2.0,
     samples: Sequence[str] | None = None,
     cache_dir: str | None = None,
+    verify: bool = True,
+    ca_file: str = "",
 ) -> CheckContext:
-    """The checks' view of a :class:`~dnsloadforge.targets.Target`: its address and
-    the rules it is judged by.  ``samples`` are block-listed names for the
-    cross-type check; by default the first few of the cached threat lists."""
+    """The checks' view of a :class:`~dnsloadforge.targets.Target`: its address,
+    how to reach it, and the rules it is judged by.  ``samples`` are block-listed
+    names for the cross-type check; by default the first few of the cached threat
+    lists.  ``verify`` and ``ca_file`` say how to check a DoT or DoH certificate."""
     from .domainlist import cached_names
     from .targets import BLOCK_CATEGORIES
 
     if samples is None:
         samples = cached_names(["urlhaus", "phishing-army", "blocklistproject-malware"], 6, cache_dir)
+    via = None
+    transport = getattr(target, "transport", "udp")
+    if transport != "udp":
+        via = Endpoint(
+            server=target.server,
+            port=target.port,
+            transport=transport,
+            tls_name=target.tls_name,
+            path=target.doh_path,
+            verify=verify,
+            ca_file=target.ca_file or ca_file,
+        )
     return CheckContext(
+        via=via,
         server=target.server,
         port=target.port,
         target_name=target.name,
