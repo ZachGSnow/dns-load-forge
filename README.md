@@ -164,6 +164,36 @@ network, the targets and the day's threat feeds.)*
   comparison**. Every finished run, comparison or not, lands in the table, and **Export
   JSON** saves it.
 
+## Deployment checks
+
+Before the load test, check how the filter is deployed. Each check is a handful of single
+queries, and every result shows the queries and answers behind it.
+
+```bash
+python -m dnsloadforge checks --target "OpenDNS FamilyShield"
+python -m dnsloadforge checks --server 10.0.0.10 --json      # the evidence, for a report
+```
+
+| Group | Check | What it looks at |
+|---|---|---|
+| Resolver | Who answers | NSID and the whoami services: which servers answer, the egress address and its AS, whether a client subnet is passed upstream, a reported software version |
+| This network | DNS interception | a query to `192.0.2.1`, where no DNS server lives: any answer means DNS on the path is intercepted |
+| | Plain DNS bypass | whether Google, Cloudflare and Quad9 answer directly on port 53 |
+| | Encrypted DNS bypass | whether their DNS-over-HTTPS (443) and DNS-over-TLS (853) endpoints are reachable |
+| Encrypted DNS | Firefox canary | `use-application-dns.net` must not resolve, or Firefox may turn on DoH by itself |
+| | iCloud Private Relay | both `mask.icloud.com` and `mask-h2.icloud.com` must be blocked, or Private Relay starts |
+| | Designated resolvers | the DDR designation (RFC 9462): which encrypted endpoints devices will upgrade to |
+| Security | DNSSEC validation | `dnssec-failed.org` must fail; a signed name should come back authenticated |
+| | Rebinding protection | whether public names may answer with private addresses |
+| Content controls | SafeSearch | Google, YouTube, Bing and DuckDuckGo enforcement (a warning when the target is meant to block adult content) |
+| Policy | Vendor test domains | Umbrella's, Cloudflare's, Quad9's and Palo Alto's own test names: whose policy is live |
+| | Every query type | names blocked for A must also be blocked for AAAA, HTTPS, TXT and MX |
+
+The "this network" checks describe the machine you run them from, and send a few packets to
+public resolvers; `--no-network` leaves them out. Vendors change their test names and
+block pages, so a check that looks wrong is worth reading at the evidence level. The
+expected answers were checked against live resolvers on 2026-11-26.
+
 ## The dashboard
 
 Near-real-time, updated once a second over Server-Sent Events, with three pages:
@@ -186,6 +216,7 @@ Near-real-time, updated once a second over Server-Sent Events, with three pages:
   * **False positives / false negatives** - the money tables.
   * **Top domains / top clients**, sortable.
 * **Compare** - tick targets, run them on identical traffic, and read the table and charts.
+* **Checks** - the deployment checks above, grouped, with the evidence behind each result.
 * **Domain lists** - what mix was actually loaded, and a **Sources** table to refresh each
   list, refresh them all, or switch one off. List changes happen between runs only, because
   re-parsing a million-name list would otherwise distort the latency being measured. A
@@ -379,7 +410,7 @@ full 10,000 qps soak.
 python -m unittest discover -s tests -t tests -v
 ```
 
-314 tests, no network access required. The ones that matter most are the seven
+336 tests, no network access required. The ones that matter most are the seven
 end-to-end verdict scenarios in `tests/test_engine.py`, which drive real UDP at a real
 mock appliance and assert that an honest filter is reported as `filtering` **while** a
 passthrough, overblocking and lossy filter each produce a different, correct verdict.
@@ -411,6 +442,7 @@ command functions.
 | `mock` | run the simulated appliance standalone |
 | `bench` | measure what this machine can generate |
 | `doctor` | check readiness: Python, elevation, source address, lists, target reachability |
+| `checks` | deployment checks: identity, bypass, encrypted-DNS canaries, DNSSEC, SafeSearch, vendor test names |
 
 Running with no command defaults to `run`, so `python -m dnsloadforge --server 1.2.3.4`
 does the obvious thing.

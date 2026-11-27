@@ -820,6 +820,21 @@ def _read_cache_file(path: Path) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
+def cached_names(slugs: list[str], limit: int, cache_dir: str | Path | None = None) -> list[str]:
+    """The first names of cached sources, without building the catalogue.
+
+    The block lists put their highest-confidence entries first, which is what a
+    handful of probes wants; reading three files beats parsing six million names.
+    """
+    directory = _ensure_cache_dir(cache_dir)
+    names: list[str] = []
+    for slug in slugs:
+        names += _read_cache_file(_cache_file(directory, slug))[:limit]
+        if len(names) >= limit:
+            break
+    return names[:limit]
+
+
 def _write_cache_file(path: Path, domains: list[str]) -> None:
     tmp = path.with_name(path.name + ".tmp")
     try:

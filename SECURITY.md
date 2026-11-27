@@ -9,6 +9,10 @@ addresses that come back. Even so:
 * Security monitoring that logs DNS lookups may alert on the block-listed names, the
   algorithmic-looking `.invalid` probes, or the sheer query volume from one host. Tell
   whoever watches your network before you run it.
+* `checks` sends single queries to public resolvers (Google, Cloudflare, Quad9) and to the
+  vendors' published test domains, and opens TCP connections to their DoH/DoT ports
+  without sending anything, to see whether the network lets clients around the filter.
+  `--no-network` leaves those out.
 * A resolver you do not own is somebody else's infrastructure. Public targets are held to
   100 queries per second unless you pass `--allow-public-target`. Only test services you
   are authorised to test, and ask a vendor before pushing hard on a shared service.

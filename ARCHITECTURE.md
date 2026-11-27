@@ -20,7 +20,8 @@ src/dnsloadforge/
   engine.py          asyncio sender: pacing, bursts, in-flight budget, classification
   stats.py           aggregation, rolling windows, percentiles, findings, verdict
   server.py          stdlib HTTP + SSE dashboard, run/compare control, list jobs, request screening
-  mockappliance.py   simulated filtering appliance, 7 scenarios, standalone CLI
+  mockappliance.py   simulated filtering appliance, 8 scenarios, standalone CLI
+  checks.py          deployment checks: identity, bypass, canaries, DNSSEC, SafeSearch
   dashboard/index.html  the front end: built from web/ into one self-contained file
   dashboard/THIRD_PARTY_NOTICES.txt  licenses of the libraries bundled into that page
 web/                       the dashboard's source: React, Tailwind CSS, shadcn/ui, Recharts
@@ -31,7 +32,7 @@ scripts/
   Invoke-DnsLoadForge.ps1   PowerShell front end
   New-LabSourceIPs.ps1      create/remove the source-IP pool (elevated)
   Get-DnsLoadForgeCapture.ps1  pktmon wire capture + reconcile (elevated)
-tests/                     314 tests; no network required
+tests/                     336 tests; no network required
 runs/                      per-query record logs (gitignored)
 lists/cache/               fetched domain lists in a checkout (gitignored); a pip install uses
                            %LOCALAPPDATA%\dnsloadforge or ~/.cache/dnsloadforge instead
@@ -203,6 +204,22 @@ A refresh fetches each source with `refresh_source` (one dead list never stops t
 then rebuilds the catalogue from the cache and swaps it in atomically - a run holds its
 own reference, so it never sees a half-built catalogue. Disabled sources are stored in
 `disabled.json` beside the cache, keeping `sources.json` read-only.
+
+### Deployment checks are single queries with evidence
+
+`checks.py` is deliberately not part of the load path. Each check sends a handful of
+queries through an injectable `ask()` function (tests replace it with a fake resolver, so
+every pass, warn and fail path runs without the network) and returns a `CheckResult` that
+carries its evidence: every query, its answer, EDE and NSID. The expected answers are
+external facts that drift -- vendors rename test domains and move block pages -- so they
+were verified live and dated, and the evidence is always shown rather than only a verdict.
+Two lessons from that verification are encoded: Umbrella's test names resolve to
+146.112.59.12 on an unfiltered resolver, inside the same network as its block pages, so
+only the exact block-page addresses count; and a resolver that answers every name with
+the same address makes a SafeSearch comparison meaningless, so that is reported as
+inconclusive. The dashboard runs the checks on a background thread and refuses them
+during a load run, because a few dozen extra queries are exactly the noise a latency
+measurement must not contain.
 
 ### Verdict precedence
 

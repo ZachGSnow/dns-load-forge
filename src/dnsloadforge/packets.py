@@ -49,6 +49,12 @@ _FLAG_AA = 0x0400
 _FLAG_TC = 0x0200
 _FLAG_RD = 0x0100
 _FLAG_RA = 0x0080
+_FLAG_AD = 0x0020
+
+#: Query classes: IN for everything, CH for the server-identity names
+#: (``id.server``, ``hostname.bind``) that a resolver answers about itself.
+QCLASS_IN = 1
+QCLASS_CH = 3
 
 _TYPE_OPT = 41
 _TYPE_A = 1
@@ -160,6 +166,7 @@ def encode_query(
     udp_size: int = 1232,
     dnssec_ok: bool = False,
     options: Sequence[tuple[int, bytes]] = (),
+    qclass: int = QCLASS_IN,
 ) -> tuple[bytes, int]:
     """Build a DNS query.  Returns ``(packet, query_id)``.
 
@@ -186,7 +193,7 @@ def encode_query(
     arcount = 1 if edns else 0
     packet = bytearray(_HEADER.pack(qid, flags, 1, 0, 0, arcount))
     packet += _encode_name(name)
-    packet += struct.pack("!HH", qnum, 1)  # QTYPE, QCLASS=IN
+    packet += struct.pack("!HH", qnum, qclass)  # QTYPE, QCLASS
 
     if edns:
         # OPT: NAME(root) TYPE(41) CLASS(udp payload size) TTL(ext-rcode/ver/flags)
@@ -200,6 +207,17 @@ def encode_query(
 
 def _encode_options(options: Sequence[tuple[int, bytes]]) -> bytes:
     return b"".join(struct.pack("!HH", code, len(data)) + bytes(data) for code, data in options)
+
+
+def txt_parts(rdata: bytes) -> list[str]:
+    """A TXT record's character-strings (RFC 1035 3.3.14)."""
+    parts: list[str] = []
+    pos = 0
+    while pos < len(rdata):
+        length = rdata[pos]
+        parts.append(rdata[pos + 1 : pos + 1 + length].decode("utf-8", "replace"))
+        pos += 1 + length
+    return parts
 
 
 def ede_option(code: int, text: str = "") -> tuple[int, bytes]:
@@ -245,6 +263,8 @@ class DNSAnswer:
     svc_priority: int = 0
     svc_target: str = ""
     hints: tuple[str, ...] = ()
+    svc_alpn: tuple[str, ...] = ()
+    svc_port: int = 0
 
     def __str__(self) -> str:  # pragma: no cover - cosmetic
         return f"{self.name} {self.rtype_name} {self.ip or self.rdata.hex()}"
@@ -315,6 +335,22 @@ class DNSMessage:
     @property
     def recursive_available(self) -> bool:
         return bool(self.flags & _FLAG_RA)
+
+    @property
+    def authenticated(self) -> bool:
+        """The AD flag: the resolver validated the answer with DNSSEC."""
+        return bool(self.flags & _FLAG_AD)
+
+    @property
+    def txt(self) -> list[str]:
+        """Every TXT record in the answer section, each record's strings joined."""
+        return ["".join(parts) for parts in self.txt_records]
+
+    @property
+    def txt_records(self) -> list[list[str]]:
+        """Every TXT record as its separate strings: identity services answer with
+        key/value pairs such as ``"ns" "192.0.2.53"``."""
+        return [txt_parts(a.rdata) for a in self.answers if a.rtype == QTYPES["TXT"]]
 
     @property
     def answer_ips(self) -> list[str]:
@@ -501,7 +537,7 @@ def _parse_rr(data: bytes, offset: int) -> tuple[DNSAnswer, int]:
     offset += rdlength
 
     ip = ""
-    priority, target, hints = 0, "", ()
+    priority, target, hints, alpn, port = 0, "", (), (), 0
     if rtype == _TYPE_A and rdlength == 4:
         ip = str(ipaddress.IPv4Address(rdata))
     elif rtype == _TYPE_AAAA and rdlength == 16:
@@ -512,7 +548,7 @@ def _parse_rr(data: bytes, offset: int) -> tuple[DNSAnswer, int]:
         except DNSError:
             ip = ""
     elif rtype in (_TYPE_SVCB, _TYPE_HTTPS):
-        priority, target, hints = _parse_svcb(data, offset - rdlength, offset)
+        priority, target, hints, alpn, port = _parse_svcb(data, offset - rdlength, offset)
 
     rtype_name = QTYPE_NAMES.get(rtype, f"TYPE{rtype}") if rtype != _TYPE_OPT else "OPT"
     return (
@@ -527,25 +563,31 @@ def _parse_rr(data: bytes, offset: int) -> tuple[DNSAnswer, int]:
             svc_priority=priority,
             svc_target=target,
             hints=hints,
+            svc_alpn=alpn,
+            svc_port=port,
         ),
         offset,
     )
 
 
-def _parse_svcb(data: bytes, start: int, end: int) -> tuple[int, str, tuple[str, ...]]:
-    """SVCB/HTTPS RDATA: priority, target and the hinted addresses.
+def _parse_svcb(
+    data: bytes, start: int, end: int
+) -> tuple[int, str, tuple[str, ...], tuple[str, ...], int]:
+    """SVCB/HTTPS RDATA: priority, target, the hinted addresses, ALPN ids and port.
 
     Damaged parameters end the walk rather than the decode: the address hints are
     what classification needs, and a response is still worth scoring without them.
     """
     if end - start < 3:
-        return 0, "", ()
+        return 0, "", (), (), 0
     priority = struct.unpack_from("!H", data, start)[0]
     try:
         target, pos = _read_name(data, start + 2)
     except DNSError:
-        return priority, "", ()
+        return priority, "", (), (), 0
     hints: list[str] = []
+    alpn: list[str] = []
+    port = 0
     while pos + 4 <= end:
         key, length = struct.unpack_from("!HH", data, pos)
         pos += 4
@@ -553,11 +595,19 @@ def _parse_svcb(data: bytes, start: int, end: int) -> tuple[int, str, tuple[str,
             break
         value = data[pos : pos + length]
         pos += length
-        if key == _SVC_IPV4HINT:
+        if key == 1:
+            at = 0
+            while at < length:
+                size = value[at]
+                alpn.append(value[at + 1 : at + 1 + size].decode("ascii", "replace"))
+                at += 1 + size
+        elif key == 3 and length == 2:
+            port = struct.unpack("!H", value)[0]
+        elif key == _SVC_IPV4HINT:
             hints += [str(ipaddress.IPv4Address(value[i : i + 4])) for i in range(0, length - length % 4, 4)]
         elif key == _SVC_IPV6HINT:
             hints += [str(ipaddress.IPv6Address(value[i : i + 16])) for i in range(0, length - length % 16, 16)]
-    return priority, target or ".", tuple(hints)
+    return priority, target or ".", tuple(hints), tuple(alpn), port
 
 
 def _parse_options(rdata: bytes, msg: "DNSMessage") -> None:

@@ -63,7 +63,7 @@ PUBLIC_RESOLVERS = frozenset(
     }
 )
 
-COMMANDS = ("run", "serve", "lists", "targets", "mock", "bench", "doctor")
+COMMANDS = ("run", "serve", "lists", "targets", "mock", "bench", "doctor", "checks")
 
 #: Default per-category domain cap.  The full source set is around 5 million
 #: domains, which costs roughly a gigabyte of RAM and 20 seconds of startup; a
@@ -176,6 +176,32 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--targets", default=None, help="targets file (default: ./targets.json if present)")
     doctor.add_argument("--source-ips-file", default=None)
     doctor.add_argument("--json", action="store_true")
+
+    checks = sub.add_parser(
+        "checks",
+        help="check how the filter is deployed: identity, bypass, encrypted DNS, DNSSEC, SafeSearch",
+        description=(
+            "Deployment checks against one target: which resolver answers, whether DNS on this\n"
+            "network is intercepted or can be bypassed, the encrypted-DNS canaries, DNSSEC,\n"
+            "rebinding protection, SafeSearch, the vendors' test domains, and whether a blocked\n"
+            "name is blocked for every query type.  A few dozen queries in all."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    checks.add_argument("--server", default=None, help="resolver or appliance to check")
+    checks.add_argument("--port", type=int, default=53)
+    checks.add_argument("--target", action="append", default=None, help="a named target (see `targets`)")
+    checks.add_argument("--targets", default=None, help="targets file (default: ./targets.json if present)")
+    checks.add_argument("--target-kind", choices=TARGET_KINDS, default=None)
+    checks.add_argument(
+        "--no-network",
+        action="store_true",
+        help="skip the checks about this machine's network (interception, bypass), which query public resolvers",
+    )
+    checks.add_argument("--only", action="append", default=None, help="run only this check id; repeatable")
+    checks.add_argument("--timeout", type=float, default=2.0, help="seconds to wait for each answer (default: 2)")
+    checks.add_argument("--cache-dir", default=None)
+    checks.add_argument("--json", action="store_true", help="emit machine-readable output")
 
     return parser
 
@@ -1343,6 +1369,7 @@ def main(argv: list[str] | None = None) -> int:
         "mock": cmd_mock,
         "bench": cmd_bench,
         "doctor": cmd_doctor,
+        "checks": cmd_checks,
     }[args.command]
 
     try:
@@ -1353,6 +1380,39 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
+
+
+_STATUS_MARK = {"pass": "pass", "warn": "WARN", "fail": "FAIL", "error": "ERR ", "info": "info", "skip": "skip"}
+
+
+def cmd_checks(args: argparse.Namespace) -> int:
+    """Deployment checks against one target, printed as a table or JSON."""
+    from .checks import context_for_target, run_checks, summarise
+
+    _available, chosen = resolve_targets(args)
+    if len(chosen) > 1:
+        raise ValueError("checks run against one target at a time")
+    target = chosen[0]
+    ctx = context_for_target(target, network=not args.no_network, timeout=args.timeout, cache_dir=args.cache_dir)
+    quiet = getattr(args, "json", False)
+    if not quiet:
+        print(f"DNS Load Forge {__version__} -- deployment checks against {target.name} ({target.server}:{target.port})")
+    results = run_checks(ctx, only=args.only)
+    summary = summarise(results)
+    if quiet:
+        print(json.dumps({"target": target.as_dict(), "summary": summary, "checks": [r.as_dict() for r in results]}, indent=2))
+        return 0
+    group = ""
+    for result in results:
+        if result.group != group:
+            group = result.group
+            print()
+            print(f"  {group.upper()}")
+        print(f"    {_STATUS_MARK.get(result.status, result.status):4}  {result.title:30} {result.summary}")
+    counts = ", ".join(f"{count} {status}" for status, count in summary["counts"].items() if count)
+    print()
+    print(f"  {counts}.  Run with --json for the evidence behind each result.")
+    return 0
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
