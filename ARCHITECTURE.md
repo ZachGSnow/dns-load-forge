@@ -162,10 +162,12 @@ onto a copy of the `RunConfig`:
 * `kind` - `public` excuses NXDOMAIN for internal-only names (`*.local`, `*.corp`, ...) and
   applies the 100 qps limit; `appliance` expects AD names to resolve.
 
-Two more inputs reach `classify()` from the wire. An **Extended DNS Error** in the policy
-range (4 Forged Answer, 15 Blocked, 16 Censored, 17 Filtered, 18 Prohibited) is the filter
-saying it applied a policy, so it is a block whatever the answer looks like; filters do
-not agree on which code a block gets, so all five count. And the **address hints in
+Two more inputs reach `classify()` from the wire. An **Extended DNS Error** that means a
+policy (4 Forged Answer, 15 Blocked, 16 Censored, 17 Filtered, 18 Prohibited, and 35
+Blocked by Upstream DNS Server, which a forwarder sends for its upstream's block) is the
+filter saying it applied a policy, so it is a block whatever the answer looks like;
+filters do not agree on which code a block gets, so all six count. Every code the IANA
+registry assigns is named in reports. And the **address hints in
 HTTPS/SVCB records** are passed in with the A/AAAA addresses, because a browser connects to
 them directly: a block-listed name whose HTTPS answer carries real hints has leaked. The
 engine also names the mechanism behind each block (`block_signal()`: NXDOMAIN, REFUSED,

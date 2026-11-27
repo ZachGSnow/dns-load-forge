@@ -48,9 +48,31 @@ class TestWireFormat(unittest.TestCase):
         self.assertIsNone(self.response(rcode=2, edns_options=[pk.ede_option(6)]).policy_ede)
 
     def test_every_policy_code_counts(self) -> None:
-        for code in (4, 15, 16, 17, 18):
+        for code in (4, 15, 16, 17, 18, 35):
             with self.subTest(code=code):
                 self.assertEqual(self.response(edns_options=[pk.ede_option(code)]).policy_ede, code)
+
+    def test_codes_are_named_as_the_registry_names_them(self) -> None:
+        """Codes after RFC 8914 were shown as a bare number; a forwarder's upstream
+        block (35) and a rate limit (31) are worth reading at a glance."""
+        self.assertEqual(pk.ede_label(29), "29 Synthesized")
+        self.assertEqual(pk.ede_label(31), "31 Rate Limited")
+        self.assertEqual(pk.ede_label(35), "35 Blocked by Upstream DNS Server")
+        self.assertEqual(pk.ede_label(36), "36 Unassigned")
+        self.assertEqual(pk.ede_label(60000), "60000 Private Use")
+        self.assertEqual(sorted(pk.EDE_NAMES), list(range(36)), "every assigned code has a name")
+
+    def test_a_block_made_upstream_is_a_block(self) -> None:
+        """A forwarding filter passes on its upstream's block with EDE 35, often with
+        an ordinary-looking answer; it is scored like any other policy block."""
+        self.assertEqual(
+            classify(Category.BLOCK_MALWARE.value, "NOERROR", ["198.51.100.7"], SINK, policy_ede=35)[0],
+            Outcome.BLOCKED.value,
+        )
+        self.assertEqual(
+            classify(Category.ALLOW_POPULAR.value, "NOERROR", ["198.51.100.7"], SINK, policy_ede=35)[0],
+            Outcome.FALSE_POSITIVE.value,
+        )
 
     def test_nsid_is_read_and_requested(self) -> None:
         message = self.response(edns_options=[(pk.EDNS_NSID, b"res715.ord")])
