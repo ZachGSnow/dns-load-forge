@@ -1,0 +1,58 @@
+{
+  "_comment": "Raw DNS responses captured from public resolvers on 2026-11-26 (one query each), to pin the decoder against real wire data: name compression, EDE options, NSID and HTTPS hints as real servers send them.",
+  "responses": [
+    {
+      "label": "cloudflare-security-block",
+      "resolver": "1.1.1.2",
+      "qname": "malware.testcategory.com",
+      "qtype": "A",
+      "captured": "2026-11-26",
+      "hex": "123481800001000100000001076d616c776172650c7465737463617465676f727903636f6d0000010001c00c000100010000003c00040000000000002904d000000000000f000f00020010000300056f72643131",
+      "rcode": "NOERROR",
+      "answer_ips": [
+        "0.0.0.0"
+      ],
+      "hint_ips": [],
+      "ede": [
+        16
+      ],
+      "policy_ede": 16,
+      "has_nsid": true
+    },
+    {
+      "label": "quad9-block",
+      "resolver": "9.9.9.9",
+      "qname": "isitblocked.org",
+      "qtype": "A",
+      "captured": "2026-11-26",
+      "hex": "1234810300010000000000010b69736974626c6f636b6564036f7267000001000100002904d00000000000140003000a7265733232332e6f7264000f00020011",
+      "rcode": "NXDOMAIN",
+      "answer_ips": [],
+      "hint_ips": [],
+      "ede": [
+        17
+      ],
+      "policy_ede": 17,
+      "has_nsid": true
+    },
+    {
+      "label": "https-hints",
+      "resolver": "1.1.1.1",
+      "qname": "cloudflare.com",
+      "qtype": "HTTPS",
+      "captured": "2026-11-26",
+      "hex": "1234818000010001000000010a636c6f7564666c61726503636f6d0000410001c00c0041000100000043003d0001000001000602683302683200040008681084e5681085e500060020260647000000000000000000681084e5260647000000000000000000681085e500002904d0000000000009000300056f72643130",
+      "rcode": "NOERROR",
+      "answer_ips": [],
+      "hint_ips": [
+        "104.16.132.229",
+        "104.16.133.229",
+        "2606:4700::6810:84e5",
+        "2606:4700::6810:85e5"
+      ],
+      "ede": [],
+      "policy_ede": null,
+      "has_nsid": true
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { BlockSignalsCard } from "@/components/live/block-signals"
 import { OutcomesCard, RcodeCard } from "@/components/live/breakdowns"
 import { KpiCards } from "@/components/live/kpi-cards"
 import { LatencyCard } from "@/components/live/latency-card"
@@ -29,6 +30,7 @@ export function LivePage() {
         <LatencyCard latency={snapshot?.latency_ms ?? {}} series={series} />
         <RcodeCard snapshot={snapshot} />
       </div>
+      <BlockSignalsCard snapshot={snapshot} />
       <CategoryTable snapshot={snapshot} />
       <div className="grid gap-4 xl:grid-cols-2 xl:gap-6">
         <FindingsCard kind="fp" rows={snapshot?.false_positives ?? []} />

@@ -45,6 +45,7 @@ import { DEMO, DOWNLOADS } from "@/lib/api"
 import { CATEGORY_LABELS } from "@/lib/constants"
 import { fmtFraction, fmtInt, fmtMs, fmtPct, fmtRate, num } from "@/lib/format"
 import { fetchHistory } from "@/lib/resources"
+import { dominantSignal } from "@/lib/signals"
 import type { HistoryRun, Target } from "@/lib/schema"
 
 const PUBLIC_QPS_LIMIT = 100
@@ -374,6 +375,9 @@ export function ComparePage() {
                     >
                       Leaked
                     </TableHead>
+                    <TableHead title="How most blocks were signalled, and the Extended DNS Error the filter attached">
+                      Blocks with
+                    </TableHead>
                     <TableHead
                       className="text-right"
                       title="Share of expected-allow queries that were wrongly blocked"
@@ -430,6 +434,14 @@ export function ComparePage() {
                           )}
                         >
                           {fmtInt(row.leaked)}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          <div>{dominantSignal(row.block_signals)}</div>
+                          {row.ede?.length ? (
+                            <div className="font-mono text-muted-foreground">
+                              EDE {row.ede[0].code} {row.ede[0].name}
+                            </div>
+                          ) : null}
                         </TableCell>
                         <TableCell
                           className={cn(

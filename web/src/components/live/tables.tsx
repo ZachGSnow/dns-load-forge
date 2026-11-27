@@ -211,6 +211,9 @@ export function FindingsCard({
                         {row.qname}
                       </div>
                       <div className="flex gap-3 truncate font-mono text-xs text-muted-foreground">
+                        {row.qtype ? (
+                          <span className="text-foreground">{row.qtype}</span>
+                        ) : null}
                         <span>{row.client_ip || "-"}</span>
                         <span>{row.category || "-"}</span>
                       </div>
@@ -223,6 +226,11 @@ export function FindingsCard({
                       title={fp ? row.rcode : row.answer}
                     >
                       {(fp ? row.rcode : row.answer) || "-"}
+                      {row.ede ? (
+                        <div className="truncate text-xs font-normal text-muted-foreground">
+                          EDE {row.ede}
+                        </div>
+                      ) : null}
                     </TableCell>
                     <TableCell
                       className={cn(

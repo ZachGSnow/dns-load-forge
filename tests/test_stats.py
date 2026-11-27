@@ -455,7 +455,7 @@ class TestRecordLog(unittest.TestCase):
         name, so this pins the order both sides depend on."""
         values = (
             1.5, "10.0.0.1", 7, "developer", "example.com", "A",
-            "allow_popular", "NOERROR", "allowed", 4.2, "93.184.216.34", 29, 45,
+            "allow_popular", "NOERROR", "allowed", 4.2, "93.184.216.34", 29, 45, "17",
         )
         path = self.dir / "records.jsonl"
         with RecordLog(path) as log:
@@ -474,9 +474,9 @@ class TestRecordLog(unittest.TestCase):
         path = self.dir / "records.csv"
         rows = [
             (10.5, "10.0.0.1", 3, "developer", "a.example.com", "A",
-             "allow_popular", "NOERROR", "allowed", 4.25, "93.184.216.34", 29, 45),
+             "allow_popular", "NOERROR", "allowed", 4.25, "93.184.216.34", 29, 45, ""),
             (11.5, "10.0.0.2", 4, "kiosk_shared", "b.example.com", "AAAA",
-             "block_ads", "NXDOMAIN", "blocked", 0.5, "", 29, 12),
+             "block_ads", "NXDOMAIN", "blocked", 0.5, "", 29, 12, "15"),
         ]
         with RecordLog(path, fmt="csv") as log:
             for row in rows:

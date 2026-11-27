@@ -180,6 +180,8 @@ Near-real-time, updated once a second over Server-Sent Events, with three pages:
     buckets, which are shares of queries *sent* rather than received, since they never
     arrived.
   * **Latency** - p50/p95/p99 plus p95 over time.
+  * **How the target signals a block** - NXDOMAIN, a block page, a refusal; the
+    Extended DNS Errors it sent; and, with `--nsid`, which servers answered.
   * **Results by category** - every category with its expectation, counts and pass rate.
   * **False positives / false negatives** - the money tables.
   * **Top domains / top clients**, sortable.
@@ -232,6 +234,26 @@ wrongly blocks the enterprise list, the verdict turns `DEGRADED`, false-positive
 appear under the traffic chart, and the table names every broken domain.
 
 ![A DEGRADED verdict: 12,577 false blocks, false-positive bars under the traffic chart, the results by category, and a false-positive table listing blocked enterprise domains such as webex.com and ocsp.digicert.com](docs/false-positives.png)
+
+## How a block is recognised
+
+A filter can say "blocked" in several ways, and the tool reads all of them:
+
+* **NXDOMAIN, REFUSED, or no records.**
+* **A sinkhole or block-page address.** `0.0.0.0` and `::` always count; a target's
+  `sinkhole_ips` / `sinkhole_cidrs` add its own block page.
+* **An Extended DNS Error** (RFC 8914) such as 15 Blocked, 16 Censored or 17 Filtered.
+  This is the filter saying it applied a policy, so the answer counts as a block whatever
+  address comes back, even a block page nobody listed. Observed live: Cloudflare 1.1.1.2
+  sends 16, Quad9 17.
+* **HTTPS/SVCB hints count as addresses.** A browser connects to the `ipv4hint` and
+  `ipv6hint` addresses in an HTTPS record without asking for A or AAAA. A filter that
+  blocks the address lookups but answers HTTPS with real hints is scored as **leaking**.
+
+The dashboard shows how the target signalled its blocks and which Extended DNS Errors it
+sent. That is how filters differ in what users see: a not-found page, a block page, or a
+refusal. Run with `--nsid` to also see which server instances answered, such as both
+halves of an HA pair, an anycast site, or a resolver you did not expect.
 
 ## What gets generated
 
@@ -327,9 +349,12 @@ python -m dnsloadforge --mock                                    # as the target
 | `servfail` | failing under load: 30% SERVFAIL |
 | `slow` | saturated link: 150 ms ± 100 ms |
 | `refused` | broken ACL: REFUSED for everything |
+| `https-leak` | blocks A and AAAA for block-listed names but answers their HTTPS records with real address hints |
 
 `--mock-overblock` makes the quickstart rehearsal produce a real false-positive report,
-so you can see what a failing appliance looks like before you find one.
+so you can see what a failing appliance looks like before you find one. Blocked answers
+from the mock carry Extended DNS Error 15 (Blocked) like most current filters; the
+standalone mock takes `--block-ede CODE`, and `0` turns it off.
 
 ## Wire-side verification (optional)
 
@@ -354,7 +379,7 @@ full 10,000 qps soak.
 python -m unittest discover -s tests -t tests -v
 ```
 
-292 tests, no network access required. The ones that matter most are the seven
+314 tests, no network access required. The ones that matter most are the seven
 end-to-end verdict scenarios in `tests/test_engine.py`, which drive real UDP at a real
 mock appliance and assert that an honest filter is reported as `filtering` **while** a
 passthrough, overblocking and lossy filter each produce a different, correct verdict.
@@ -408,10 +433,6 @@ does the obvious thing.
   100 ms), and a percentile is reported as the *upper bound* of its bucket, so values
   are a slight over-estimate rather than a flattering one. Per-domain latency uses a
   coarser 8-bucket histogram to keep memory bounded.
-* **A filter that blocks `A` but answers `HTTPS` for a blocked name is not
-  distinguished** from one that blocks properly. It is leaking connectivity in
-  practice, since an `HTTPS` record carries the address, but this classifier does not
-  call it out.
 * **Domain lists are a snapshot.** Threat feeds churn daily; the cache is deliberately
   trusted for 7 days so two runs stay comparable. Refresh before a formal validation.
 * **Presets are not a certification.** The built-in targets encode each service's
