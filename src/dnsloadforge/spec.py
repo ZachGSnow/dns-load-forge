@@ -363,7 +363,7 @@ class SinkholeSet:
     def __contains__(self, ip: object) -> bool:
         if ip in self._ips:
             return True
-        if not self._nets or not isinstance(ip, str):
+        if not isinstance(ip, str):
             return False
         import ipaddress
 
@@ -371,6 +371,13 @@ class SinkholeSet:
             address = ipaddress.ip_address(ip)
         except ValueError:
             return False
+        # An AAAA answer can carry an IPv4 block page as an IPv4-mapped address:
+        # OpenDNS answers ``::ffff:146.112.61.106``, which Python before 3.13 spells
+        # ``::ffff:9270:3d6a``.  It is the same block page, so match it as IPv4.
+        if address.version == 6 and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+            if str(address) in self._ips:
+                return True
         return any(address in net for net in self._nets if net.version == address.version)
 
 

@@ -354,7 +354,7 @@ full 10,000 qps soak.
 python -m unittest discover -s tests -t tests -v
 ```
 
-290 tests, no network access required. The ones that matter most are the seven
+292 tests, no network access required. The ones that matter most are the seven
 end-to-end verdict scenarios in `tests/test_engine.py`, which drive real UDP at a real
 mock appliance and assert that an honest filter is reported as `filtering` **while** a
 passthrough, overblocking and lossy filter each produce a different, correct verdict.
