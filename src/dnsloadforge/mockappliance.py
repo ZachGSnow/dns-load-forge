@@ -39,6 +39,14 @@ Scenarios (this is the user-facing feature)
 ``refused``
     REFUSED for everything not explicitly blocked.  Models a broken ACL or a
     policy that was applied to the wrong scope.
+``https-leak``
+    Blocks A and AAAA for block-listed names but answers their HTTPS records
+    with real address hints.  A browser connects to those hints without asking
+    for an address, so the "blocked" site loads anyway.
+
+Blocked answers carry an Extended DNS Error (15 "Blocked" by default), as most
+current filters send, and the mock names itself in an NSID option when a query
+asks for one.
 
 Decision order
 --------------
@@ -66,7 +74,16 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import Callable
 
-from .packets import DNSError, DNSMessage, RR, decode_message, encode_response
+from .packets import (
+    EDNS_NSID,
+    RR,
+    DNSError,
+    DNSMessage,
+    decode_message,
+    ede_option,
+    encode_response,
+    svcb_rdata,
+)
 from .spec import QTYPE_NAMES
 
 __all__ = [
@@ -88,6 +105,7 @@ SCENARIOS: tuple[str, ...] = (
     "servfail",
     "slow",
     "refused",
+    "https-leak",
 )
 
 #: Per-scenario overrides applied on top of the dataclass defaults.
@@ -99,6 +117,7 @@ _SCENARIO_PRESETS: dict[str, dict] = {
     "servfail": {"servfail_rate": 0.30},
     "slow": {"latency_ms": 150.0, "jitter_ms": 100.0},
     "refused": {"refuse_all": True},
+    "https-leak": {"https_leak": True},
 }
 
 _BLOCK_MODES: tuple[str, ...] = ("nxdomain", "sinkhole", "refused")
@@ -244,6 +263,12 @@ class MockApplianceConfig:
     #: step 5 of :meth:`MockAppliance._decide` for why this cannot be on by default
     #: without manufacturing false positives in a rehearsal.
     dga_nxdomain: bool = False
+    #: Extended DNS Error code attached to blocked answers (0 for none).
+    block_ede: int = 15
+    #: Answer HTTPS for blocked names with real hints (the ``https-leak`` scenario).
+    https_leak: bool = False
+    #: Sent in an NSID option when a query asks for one.
+    nsid: str = "mock-1"
     rate_limit_qps: float = 0.0
     ttl: int = 300
     seed: int = 1234
@@ -541,8 +566,10 @@ class MockAppliance:
             or _is_blocked(qname, self.config.overblock_extra, ())
         )
         if blocked:
-            self._bump(blocked=1)
-            return self._blocked_reply(msg, qtype, edns_size)
+            disposition = self._blocked_reply(msg, qtype, edns_size)
+            if disposition.blocked:
+                self._bump(blocked=1)
+            return disposition
 
         # 3. A failing appliance fails everything, not just bad traffic.
         if self.config.servfail_rate and self._roll() < self.config.servfail_rate:
@@ -577,7 +604,41 @@ class MockAppliance:
         # 6. An ordinary answer.
         return self._answer_reply(msg, qtype, edns_size)
 
+    def _options(self, msg: DNSMessage, *, blocked: bool = False) -> list[tuple[int, bytes]]:
+        """EDNS options for a reply: an Extended DNS Error on a block, and the NSID
+        when the query asked for it.  Only sent to a query that used EDNS, since a
+        client without it could not read them."""
+        options: list[tuple[int, bytes]] = []
+        if blocked and self.config.block_ede:
+            options.append(ede_option(self.config.block_ede, "blocked by the mock appliance"))
+        if self.config.nsid and EDNS_NSID in msg.edns_options:
+            options.append((EDNS_NSID, self.config.nsid.encode("ascii", "replace")))
+        return options
+
+    def _https_rr(self, qname: str) -> RR:
+        """A ServiceMode HTTPS record with address hints, as large sites publish."""
+        rdata = svcb_rdata(
+            1,
+            ".",
+            alpn=("h2", "h3"),
+            ipv4hint=[self.config.answer_ip] if self.config.answer_ip else (),
+            ipv6hint=[self.config.answer_ip6] if self.config.answer_ip6 else (),
+        )
+        return RR(qname, "HTTPS", self.config.ttl, rdata)
+
     def _blocked_reply(self, msg: DNSMessage, qtype: str, edns_size: int) -> _Disposition:
+        if self.config.https_leak and qtype == "HTTPS":
+            # The leak: the address lookups are blocked, the HTTPS record is not,
+            # and its hints are all a browser needs to connect.
+            packet = encode_response(
+                msg,
+                rcode=_RCODE_NOERROR,
+                answers=[self._https_rr(msg.qname)],
+                edns_udp_size=edns_size,
+                edns_options=self._options(msg),
+            )
+            return _Disposition(packet=packet, rcode="NOERROR")
+        options = self._options(msg, blocked=True)
         mode = self.config.block_mode
         if mode == "sinkhole":
             if qtype == "A":
@@ -589,14 +650,18 @@ class MockAppliance:
             else:
                 answers = []
             packet = encode_response(
-                msg, rcode=_RCODE_NOERROR, answers=answers, edns_udp_size=edns_size
+                msg,
+                rcode=_RCODE_NOERROR,
+                answers=answers,
+                edns_udp_size=edns_size,
+                edns_options=options,
             )
             return _Disposition(packet=packet, rcode="NOERROR", blocked=True)
         if mode == "refused":
-            disposition = self._reply(msg, _RCODE_REFUSED, edns_size)
+            disposition = self._reply(msg, _RCODE_REFUSED, edns_size, options)
             disposition.blocked = True
             return disposition
-        disposition = self._reply(msg, _RCODE_NXDOMAIN, edns_size)
+        disposition = self._reply(msg, _RCODE_NXDOMAIN, edns_size, options)
         disposition.blocked = True
         return disposition
 
@@ -618,15 +683,32 @@ class MockAppliance:
             answers = [
                 RR(msg.qname, "PTR", self.config.ttl, "host.internal.invalid")
             ]
-        # HTTPS/SVCB/TXT/MX/SOA/NS/DNSKEY/ANY: NOERROR with an empty answer
-        # section, which is a legitimate and extremely common response.
+        elif qtype == "HTTPS":
+            answers = [self._https_rr(msg.qname)]
+        # SVCB/TXT/MX/SOA/NS/DNSKEY/ANY: NOERROR with an empty answer section,
+        # which is a legitimate and extremely common response.
         packet = encode_response(
-            msg, rcode=_RCODE_NOERROR, answers=answers, edns_udp_size=edns_size
+            msg,
+            rcode=_RCODE_NOERROR,
+            answers=answers,
+            edns_udp_size=edns_size,
+            edns_options=self._options(msg),
         )
         return _Disposition(packet=packet, rcode="NOERROR")
 
-    def _reply(self, msg: DNSMessage, rcode: int, edns_size: int) -> _Disposition:
-        packet = encode_response(msg, rcode=rcode, edns_udp_size=edns_size)
+    def _reply(
+        self,
+        msg: DNSMessage,
+        rcode: int,
+        edns_size: int,
+        options: list[tuple[int, bytes]] | None = None,
+    ) -> _Disposition:
+        packet = encode_response(
+            msg,
+            rcode=rcode,
+            edns_udp_size=edns_size,
+            edns_options=self._options(msg) if options is None else options,
+        )
         name = {0: "NOERROR", 2: "SERVFAIL", 3: "NXDOMAIN", 5: "REFUSED"}.get(
             rcode, f"RCODE{rcode}"
         )
@@ -687,6 +769,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="wrongly block this domain (drives the false-positive report)",
     )
     parser.add_argument("--sinkhole-ip", default="0.0.0.0")
+    parser.add_argument(
+        "--block-ede",
+        type=int,
+        default=15,
+        metavar="CODE",
+        help="Extended DNS Error code attached to blocked answers (0 for none; default 15 Blocked)",
+    )
     parser.add_argument("--answer-ip", default="93.184.216.34")
     parser.add_argument(
         "--dga-nxdomain",
@@ -735,6 +824,7 @@ def main(argv: list[str] | None = None) -> int:
         blocklist=blocklist or None,
         block_suffixes=tuple(args.block_suffix),
         dga_nxdomain=args.dga_nxdomain,
+        block_ede=args.block_ede,
         seed=args.seed,
         quiet=args.quiet,
         **{**preset, **overrides},

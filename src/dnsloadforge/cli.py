@@ -156,6 +156,13 @@ def build_parser() -> argparse.ArgumentParser:
     mock.add_argument("--latency-ms", type=float, default=None)
     mock.add_argument("--rate-limit-qps", type=float, default=None)
     mock.add_argument(
+        "--block-ede",
+        type=int,
+        default=15,
+        metavar="CODE",
+        help="Extended DNS Error code attached to blocked answers (0 for none; default 15 Blocked)",
+    )
+    mock.add_argument(
         "--dga-nxdomain",
         action="store_true",
         help="also NXDOMAIN names that look algorithmic (rehearses an over-eager typo-squat feed)",
@@ -237,6 +244,11 @@ def _add_common_run_args(
     evidence.add_argument("--record-format", choices=("jsonl", "csv"), default="jsonl")
     evidence.add_argument("--record-sample", type=float, default=1.0, help="keep this fraction of records (default: 1.0)")
     evidence.add_argument("--no-record-log", action="store_true", help="force the record log off even if configured")
+    evidence.add_argument(
+        "--nsid",
+        action="store_true",
+        help="ask the target which server instance answered each query (EDNS NSID); shown on the dashboard",
+    )
 
     dashboard = parser.add_argument_group("dashboard")
     dashboard.add_argument("--listen-host", default=DEFAULT_HOST, help=f"dashboard bind address (default: {DEFAULT_HOST})")
@@ -424,6 +436,7 @@ def build_config(args: argparse.Namespace, target: Target | None = None) -> RunC
         qps_burst_len_s=float(getattr(args, "burst_len", 2.0)),
         categories=categories,
         export_path="",
+        nsid=bool(getattr(args, "nsid", False)),
     )
     return target.apply(config)
 
@@ -1266,7 +1279,7 @@ def cmd_mock(args: argparse.Namespace) -> int:
     from .mockappliance import main as mock_main
 
     argv: list[str] = ["--host", args.host, "--port", str(args.port), "--scenario", args.scenario,
-                       "--block-mode", args.block_mode]
+                       "--block-mode", args.block_mode, "--block-ede", str(args.block_ede)]
     if args.blocklist_file:
         argv += ["--blocklist-file", args.blocklist_file]
     if args.dga_nxdomain:

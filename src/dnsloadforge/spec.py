@@ -232,6 +232,7 @@ RECORD_FIELDS: tuple[str, ...] = (
     "answer_ip",
     "bytes_sent",
     "bytes_received",
+    "ede",
 )
 
 
@@ -253,6 +254,8 @@ class QueryRecord:
     answer_ip: str = ""
     bytes_sent: int = 0
     bytes_received: int = 0
+    #: The Extended DNS Error code the answer carried (RFC 8914), or "".
+    ede: str = ""
 
     def as_tuple(self) -> tuple:
         return tuple(getattr(self, f) for f in RECORD_FIELDS)
@@ -309,6 +312,9 @@ class RunConfig:
     #: false positive.  Right for a public resolver, wrong for an appliance in front
     #: of Active Directory, which is why it is per target.
     ignore_internal: bool = False
+    #: Ask the target to name the server instance that answered (EDNS NSID,
+    #: RFC 5001).  Off by default: it adds four bytes to every query.
+    nsid: bool = False
 
     @property
     def target(self) -> str:
@@ -443,12 +449,21 @@ class SinkholeSet:
 #   "false_positives": [
 #     {"qname": "login.microsoftonline.com", "client_ip": "10.1.106.7",
 #      "category": "enterprise", "rcode": "SERVFAIL", "count": 3,
-#      "last_seen": 1750000000}
+#      "last_seen": 1750000000, "qtype": "A", "ede": "17 Filtered"}
 #   ],
 #   "false_negatives": [
 #     {"qname": "ads.example-bad.com", "client_ip": "10.1.106.7",
 #      "category": "block_ads", "answer": "1.2.3.4", "count": 2,
-#      "last_seen": 1750000000}
+#      "last_seen": 1750000000, "qtype": "HTTPS", "ede": ""}
+#   ],
+#   "block_signals": {               # how blocked answers were signalled; keys are
+#     "nxdomain": 900, "sinkhole": 80 # engine.BLOCK_SIGNALS, present when non-zero
+#   },
+#   "ede": [                         # Extended DNS Errors seen, any outcome
+#     {"code": 17, "name": "Filtered", "count": 950}
+#   ],
+#   "nsid": [                        # answering server instances (with --nsid)
+#     {"id": "res715.ord", "count": 1200}
 #   ],
 #   "verdict": {
 #     "status": "idle" | "unknown" | "passthrough" | "filtering" | "degraded" | "baseline",

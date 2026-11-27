@@ -279,6 +279,18 @@ export function createDemo(): Demo {
       ],
       false_positives: Array.from(fpMap.values()),
       false_negatives: Array.from(fnMap.values()),
+      block_signals: {
+        nxdomain: Math.round(blockedTotal * 0.93),
+        nodata: Math.round(blockedTotal * 0.07),
+        refused: inBurst ? 60 * tick : 0,
+      },
+      ede: [
+        { code: 17, name: "Filtered", count: Math.round(blockedTotal * 0.98) },
+      ],
+      nsid: [
+        { id: "filter-a.lab", count: Math.round(totals.received * 0.51) },
+        { id: "filter-b.lab", count: Math.round(totals.received * 0.49) },
+      ],
       verdict: {
         status,
         note:
@@ -359,6 +371,8 @@ export const demoHistory: HistoryPayload = {
       leaked: 186,
       false_positives: 0,
       note: "Filtering correctly.",
+      block_signals: { nxdomain: 10120, nodata: 60 },
+      ede: [{ code: 17, name: "Filtered", count: 10180 }],
     },
     {
       index: 2,
@@ -376,6 +390,8 @@ export const demoHistory: HistoryPayload = {
       leaked: 39,
       false_positives: 2,
       note: "Blocking legitimate traffic.",
+      block_signals: { nxdomain: 405, nodata: 5 },
+      ede: [{ code: 17, name: "Filtered", count: 410 }],
     },
     {
       index: 3,
@@ -393,6 +409,8 @@ export const demoHistory: HistoryPayload = {
       leaked: 22,
       false_positives: 0,
       note: "Filtering correctly.",
+      block_signals: { sinkhole: 410, nodata: 17 },
+      ede: [{ code: 16, name: "Censored", count: 427 }],
     },
   ],
 }

@@ -2,9 +2,10 @@
 
 Hand-rolled on purpose.  ``dnspython`` would be a fine dependency for a normal
 application, but this package has to run on a freshly imaged Windows box with
-nothing installed, and we only need: build a query, read a response's rcode and
-its A/AAAA answers.  That is ~200 lines of struct packing, so we do it here and
-keep the tool dependency-free.
+nothing installed, and we only need: build a query, and read a response's rcode,
+its addresses (A, AAAA and the hints in HTTPS/SVCB records) and the EDNS options
+that say how and where it was answered (Extended DNS Errors, NSID).  That is a few
+hundred lines of struct packing, so we do it here and keep the tool dependency-free.
 
 Everything in here is pure and synchronous, which is what makes it testable
 against known-good byte vectors.
@@ -25,11 +26,18 @@ __all__ = [
     "DNSAnswer",
     "DNSMessage",
     "RR",
+    "EDE_NAMES",
+    "EDE_POLICY_CODES",
+    "EDNS_EDE",
+    "EDNS_NSID",
+    "ede_label",
+    "ede_option",
     "encode_query",
     "encode_response",
     "decode_message",
     "normalise_qname",
     "random_query_id",
+    "svcb_rdata",
 ]
 
 #: 12-byte fixed header: ID, FLAGS, QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT.
@@ -46,6 +54,55 @@ _TYPE_OPT = 41
 _TYPE_A = 1
 _TYPE_AAAA = 28
 _TYPE_CNAME = 5
+_TYPE_SVCB = 64
+_TYPE_HTTPS = 65
+
+#: EDNS option codes this tool sends or reads.
+EDNS_NSID = 3  # RFC 5001: which server instance answered
+EDNS_EDE = 15  # RFC 8914: Extended DNS Errors
+
+#: SVCB/HTTPS parameter keys that carry addresses (RFC 9460).
+_SVC_IPV4HINT = 4
+_SVC_IPV6HINT = 6
+
+#: Extended DNS Error codes that mean a *policy* chose this answer, rather than a
+#: resolution failure: 4 Forged Answer, 15 Blocked, 16 Censored, 17 Filtered,
+#: 18 Prohibited.  Filters do not agree on which one a block gets (observed live:
+#: Cloudflare 1.1.1.2 sends 16, Quad9 and AdGuard 17, DNS4EU 15), so all five count.
+EDE_POLICY_CODES: frozenset[int] = frozenset({4, 15, 16, 17, 18})
+
+#: Names from the RFC 8914 registry, for reports.  Anything else shows as its number.
+EDE_NAMES: dict[int, str] = {
+    0: "Other",
+    1: "Unsupported DNSKEY Algorithm",
+    2: "Unsupported DS Digest Type",
+    3: "Stale Answer",
+    4: "Forged Answer",
+    5: "DNSSEC Indeterminate",
+    6: "DNSSEC Bogus",
+    7: "Signature Expired",
+    8: "Signature Not Yet Valid",
+    9: "DNSKEY Missing",
+    10: "RRSIGs Missing",
+    11: "No Zone Key Bit Set",
+    12: "NSEC Missing",
+    13: "Cached Error",
+    14: "Not Ready",
+    15: "Blocked",
+    16: "Censored",
+    17: "Filtered",
+    18: "Prohibited",
+    19: "Stale NXDOMAIN Answer",
+    20: "Not Authoritative",
+    21: "Not Supported",
+    22: "No Reachable Authority",
+    23: "Network Error",
+    24: "Invalid Data",
+}
+
+
+def ede_label(code: int) -> str:
+    return f"{code} {EDE_NAMES.get(code, 'EDE')}"
 
 _MAX_NAME_LEN = 255
 _MAX_LABEL_LEN = 63
@@ -102,13 +159,18 @@ def encode_query(
     edns: bool = True,
     udp_size: int = 1232,
     dnssec_ok: bool = False,
+    options: Sequence[tuple[int, bytes]] = (),
 ) -> tuple[bytes, int]:
     """Build a DNS query.  Returns ``(packet, query_id)``.
 
     EDNS0 (an OPT record in the additional section) is on by default: every real
     stub resolver sends it, and its advertised UDP size is what stops a filtering
     appliance from truncating large answers.  Testing without it exercises a code
-    path no real client uses, which is not the traffic we want to generate.
+    path no real client uses, which is not the traffic we want to generate.  It is
+    also what lets a filter answer with an Extended DNS Error.
+
+    ``options`` are EDNS options as ``(code, data)``; ``(EDNS_NSID, b"")`` asks the
+    server to say which instance answered.
     """
     try:
         qnum = QTYPES[qtype.upper()] if isinstance(qtype, str) else int(qtype)
@@ -128,11 +190,45 @@ def encode_query(
 
     if edns:
         # OPT: NAME(root) TYPE(41) CLASS(udp payload size) TTL(ext-rcode/ver/flags)
-        #      RDLENGTH(0).  The DO bit lives in the top bit of the TTL field.
+        #      RDLENGTH, then the options.  The DO bit is the top bit of the TTL field.
         ttl = 0x8000 if dnssec_ok else 0
-        packet += struct.pack("!BHHIH", 0, _TYPE_OPT, udp_size, ttl, 0)
+        rdata = _encode_options(options)
+        packet += struct.pack("!BHHIH", 0, _TYPE_OPT, udp_size, ttl, len(rdata)) + rdata
 
     return bytes(packet), qid
+
+
+def _encode_options(options: Sequence[tuple[int, bytes]]) -> bytes:
+    return b"".join(struct.pack("!HH", code, len(data)) + bytes(data) for code, data in options)
+
+
+def ede_option(code: int, text: str = "") -> tuple[int, bytes]:
+    """An Extended DNS Error option, for responders (the mock) and tests."""
+    return EDNS_EDE, struct.pack("!H", code) + text.encode("utf-8")
+
+
+def svcb_rdata(
+    priority: int,
+    target: str = ".",
+    *,
+    alpn: Sequence[str] = (),
+    ipv4hint: Sequence[str] = (),
+    ipv6hint: Sequence[str] = (),
+) -> bytes:
+    """SVCB/HTTPS RDATA (RFC 9460), for responders and tests.  Keys are written in
+    ascending order, as the RFC requires."""
+    out = bytearray(struct.pack("!H", priority))
+    out += b"\x00" if target in (".", "") else _encode_name(normalise_qname(target))
+    params: list[tuple[int, bytes]] = []
+    if alpn:
+        params.append((1, b"".join(bytes([len(p)]) + p.encode("ascii") for p in alpn)))
+    if ipv4hint:
+        params.append((_SVC_IPV4HINT, b"".join(ipaddress.IPv4Address(ip).packed for ip in ipv4hint)))
+    if ipv6hint:
+        params.append((_SVC_IPV6HINT, b"".join(ipaddress.IPv6Address(ip).packed for ip in ipv6hint)))
+    for key, value in params:
+        out += struct.pack("!HH", key, len(value)) + value
+    return bytes(out)
 
 
 @dataclass(slots=True)
@@ -144,6 +240,11 @@ class DNSAnswer:
     rdata: bytes
     rclass: int = 1
     ip: str = ""
+    #: SVCB/HTTPS only: priority (0 is AliasMode), target name, and the addresses
+    #: carried in ipv4hint/ipv6hint.
+    svc_priority: int = 0
+    svc_target: str = ""
+    hints: tuple[str, ...] = ()
 
     def __str__(self) -> str:  # pragma: no cover - cosmetic
         return f"{self.name} {self.rtype_name} {self.ip or self.rdata.hex()}"
@@ -169,10 +270,43 @@ class DNSMessage:
     truncated: bool = False
     edns_udp_size: int = 0
     raw_len: int = 0
+    #: Extended DNS Errors as (info code, extra text), in the order they came.
+    ede: list[tuple[int, str]] = field(default_factory=list)
+    #: The server's NSID, when it sent one (RFC 5001).
+    nsid: bytes = b""
+    #: Every EDNS option code present, so a responder can tell that NSID was asked for.
+    edns_options: list[int] = field(default_factory=list)
 
     @property
     def rcode_name(self) -> str:
         return RCODES.get(self.rcode & 0x0F, f"RCODE{self.rcode}")
+
+    @property
+    def policy_ede(self) -> int | None:
+        """The first Extended DNS Error that says a policy chose this answer."""
+        for code, _text in self.ede:
+            if code in EDE_POLICY_CODES:
+                return code
+        return None
+
+    @property
+    def nsid_text(self) -> str:
+        """NSID as text when it is printable ASCII (it usually is), else hex."""
+        if not self.nsid:
+            return ""
+        if all(32 <= b < 127 for b in self.nsid):
+            return self.nsid.decode("ascii")
+        return self.nsid.hex()
+
+    @property
+    def hint_ips(self) -> list[str]:
+        """Addresses carried in SVCB/HTTPS ipv4hint and ipv6hint parameters.
+
+        A browser can connect to these without ever asking for A or AAAA, so a filter
+        that blocks the address lookups but answers HTTPS with real hints is still
+        letting the connection through.
+        """
+        return [ip for a in self.answers if a.rtype in (_TYPE_SVCB, _TYPE_HTTPS) for ip in a.hints]
 
     @property
     def is_response(self) -> bool:
@@ -252,6 +386,7 @@ def encode_response(
     tc: bool = False,
     rd: bool = True,
     edns_udp_size: int = 0,
+    edns_options: Sequence[tuple[int, bytes]] = (),
 ) -> bytes:
     """Build a response to ``query``, echoing its question section.
 
@@ -301,7 +436,8 @@ def encode_response(
             out += rdata
 
     if edns_udp_size:
-        out += struct.pack("!BHHIH", 0, _TYPE_OPT, edns_udp_size, 0, 0)
+        rdata = _encode_options(edns_options)
+        out += struct.pack("!BHHIH", 0, _TYPE_OPT, edns_udp_size, 0, len(rdata)) + rdata
 
     return bytes(out)
 
@@ -365,6 +501,7 @@ def _parse_rr(data: bytes, offset: int) -> tuple[DNSAnswer, int]:
     offset += rdlength
 
     ip = ""
+    priority, target, hints = 0, "", ()
     if rtype == _TYPE_A and rdlength == 4:
         ip = str(ipaddress.IPv4Address(rdata))
     elif rtype == _TYPE_AAAA and rdlength == 16:
@@ -374,6 +511,8 @@ def _parse_rr(data: bytes, offset: int) -> tuple[DNSAnswer, int]:
             ip = _read_name(data, offset - rdlength)[0]
         except DNSError:
             ip = ""
+    elif rtype in (_TYPE_SVCB, _TYPE_HTTPS):
+        priority, target, hints = _parse_svcb(data, offset - rdlength, offset)
 
     rtype_name = QTYPE_NAMES.get(rtype, f"TYPE{rtype}") if rtype != _TYPE_OPT else "OPT"
     return (
@@ -385,9 +524,58 @@ def _parse_rr(data: bytes, offset: int) -> tuple[DNSAnswer, int]:
             rdata=rdata,
             rclass=rclass,
             ip=ip,
+            svc_priority=priority,
+            svc_target=target,
+            hints=hints,
         ),
         offset,
     )
+
+
+def _parse_svcb(data: bytes, start: int, end: int) -> tuple[int, str, tuple[str, ...]]:
+    """SVCB/HTTPS RDATA: priority, target and the hinted addresses.
+
+    Damaged parameters end the walk rather than the decode: the address hints are
+    what classification needs, and a response is still worth scoring without them.
+    """
+    if end - start < 3:
+        return 0, "", ()
+    priority = struct.unpack_from("!H", data, start)[0]
+    try:
+        target, pos = _read_name(data, start + 2)
+    except DNSError:
+        return priority, "", ()
+    hints: list[str] = []
+    while pos + 4 <= end:
+        key, length = struct.unpack_from("!HH", data, pos)
+        pos += 4
+        if pos + length > end:
+            break
+        value = data[pos : pos + length]
+        pos += length
+        if key == _SVC_IPV4HINT:
+            hints += [str(ipaddress.IPv4Address(value[i : i + 4])) for i in range(0, length - length % 4, 4)]
+        elif key == _SVC_IPV6HINT:
+            hints += [str(ipaddress.IPv6Address(value[i : i + 16])) for i in range(0, length - length % 16, 16)]
+    return priority, target or ".", tuple(hints)
+
+
+def _parse_options(rdata: bytes, msg: "DNSMessage") -> None:
+    """Read the EDNS options a response carried: Extended DNS Errors and NSID."""
+    pos = 0
+    while pos + 4 <= len(rdata):
+        code, length = struct.unpack_from("!HH", rdata, pos)
+        pos += 4
+        value = rdata[pos : pos + length]
+        pos += length
+        if len(value) < length:
+            return
+        msg.edns_options.append(code)
+        if code == EDNS_EDE and length >= 2:
+            info = struct.unpack_from("!H", value, 0)[0]
+            msg.ede.append((info, value[2:].decode("utf-8", "replace")[:200]))
+        elif code == EDNS_NSID:
+            msg.nsid = bytes(value[:128])
 
 
 def decode_message(data: bytes) -> DNSMessage:
@@ -432,6 +620,7 @@ def decode_message(data: bytes) -> DNSMessage:
                 # An OPT RR carries the sender's UDP payload size in its CLASS
                 # field, not a real class, so it must not be read as IN/CH/HS.
                 msg.edns_udp_size = rr.rclass
+                _parse_options(rr.rdata, msg)
             msg.additional.append(rr)
     except DNSError:
         # A response with a damaged answer section still tells us the rcode,

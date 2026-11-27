@@ -39,7 +39,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Container, Sequence
 
-from .packets import DNSError, decode_message, encode_query
+from .packets import EDNS_NSID, DNSError, decode_message, ede_label, encode_query
 from .profiles import Persona, PersonaModel
 from .spec import (
     CATEGORY_EXPECTED,
@@ -54,8 +54,10 @@ from .spec import (
 from .stats import RecordLog, StatsAggregator
 
 __all__ = [
+    "BLOCK_SIGNALS",
     "DnsLoadEngine",
     "RunResult",
+    "block_signal",
     "classify",
     "detect_local_ip",
     "MAX_BURST",
@@ -93,6 +95,7 @@ def classify(
     *,
     qname: str = "",
     ignore_internal: bool = False,
+    policy_ede: int | None = None,
 ) -> tuple[str, str]:
     """Turn one response into an :class:`Outcome`.
 
@@ -101,6 +104,15 @@ def classify(
     blocked (REFUSED, NXDOMAIN, a sinkhole address, or a server error).  A
     filtered-DNS appliance's most expensive failure is blocking the intranet or the
     Microsoft sign-in endpoint, and that is exactly what this isolates.
+
+    ``answer_ips`` should include the addresses hinted in HTTPS/SVCB records: a
+    browser connects to those without asking for A or AAAA, so a block-listed name
+    whose HTTPS answer carries real hints has leaked.
+
+    ``policy_ede`` is an Extended DNS Error code that says a policy chose the
+    answer (RFC 8914; Blocked, Filtered and so on).  It is the filter saying so
+    itself, so it is a block whatever the answer looks like -- including a
+    block-page address this tool has never been told about.
 
     ``expect == "unknown"`` (the borderline tracker/CDN bucket) never produces a
     false positive or negative -- those categories are deliberately in the grey
@@ -120,6 +132,11 @@ def classify(
     resolved = bool(answer_ips) and not sinkholed
     answer_repr = ",".join(answer_ips[:3])
 
+    if policy_ede is not None:
+        if expect == "allow":
+            return Outcome.FALSE_POSITIVE.value, answer_repr
+        return Outcome.BLOCKED.value, answer_repr
+
     if rcode == "NOERROR":
         if sinkholed:
             if expect == "allow":
@@ -138,11 +155,9 @@ def classify(
             # calling that a leak would fill the findings table with noise from
             # every non-address lookup and bury the number that matters.
             #
-            # Known limitation, stated rather than hidden: an appliance that blocks A
-            # lookups but *answers* HTTPS records for a blocked name is still leaking
-            # connectivity, because an HTTPS record carries the address.  This
-            # classifier does not distinguish that case.  Filtering on HTTPS/SVCB
-            # types with --qps against a known sinkhole target is the way to test it.
+            # An HTTPS/SVCB answer whose hints carry real addresses is not NODATA:
+            # it arrives here as ``resolved`` and is scored a leak above.  A bare
+            # "1 . alpn=h2" record with no hints carries no address and lands here.
             return Outcome.BLOCKED.value, ""
         return Outcome.ALLOWED.value, ""
 
@@ -170,6 +185,30 @@ def classify(
     if expect == "allow":
         return Outcome.FALSE_POSITIVE.value, ""
     return Outcome.ERROR.value, ""
+
+
+#: How a blocked (or wrongly blocked) answer was signalled.  Comparing filters by
+#: this is how an operator learns that one answers NXDOMAIN, another an address on
+#: its block page, and a third REFUSED -- which decides what users see.
+BLOCK_SIGNALS: tuple[str, ...] = ("nxdomain", "refused", "sinkhole", "nodata", "servfail", "address", "other")
+
+
+def block_signal(rcode: str, answer_ips: Sequence[str], sinkhole_ips: Container[str]) -> str:
+    """Name the mechanism behind a block.  ``address`` is an answer the tool did not
+    know was a block page, which only an Extended DNS Error can reveal."""
+    if rcode == "NXDOMAIN":
+        return "nxdomain"
+    if rcode == "REFUSED":
+        return "refused"
+    if rcode == "NOERROR":
+        if not answer_ips:
+            return "nodata"
+        if all(ip in sinkhole_ips for ip in answer_ips):
+            return "sinkhole"
+        return "address"
+    if rcode == "SERVFAIL":
+        return "servfail"
+    return "other"
 
 
 @dataclass(slots=True)
@@ -309,6 +348,8 @@ class DnsLoadEngine:
         self.rng = random.Random(config.seed + self.shard_index * 7919)
 
         self.sinkhole_ips = SinkholeSet(config.sinkhole_ips, config.sinkhole_cidrs)
+        #: EDNS options on every query: NSID asks which server instance answered.
+        self._query_options = ((EDNS_NSID, b""),) if config.nsid else ()
 
         # Resolve what the appliance will actually see as our source address.
         bind_ips: list[str] = list(config.source_ips) if config.source_ips else [""]
@@ -660,7 +701,7 @@ class DnsLoadEngine:
             qname, qtype, category = self.model.next_query(persona, self.rng)
             qid = protocol.alloc_qid()
             try:
-                packet, qid = encode_query(qname, qtype, qid)
+                packet, qid = encode_query(qname, qtype, qid, options=self._query_options)
             except DNSError:
                 continue
 
@@ -745,15 +786,23 @@ class DnsLoadEngine:
         self._inflight = max(0, self._inflight - 1)
         latency_ms = (time.time() - pending.sent_at) * 1000.0
         rcode = message.rcode_name
+        # HTTPS/SVCB hints are addresses too: a browser connects to them directly.
+        addresses = message.answer_ips + message.hint_ips
+        policy_ede = message.policy_ede
         outcome, answer_repr = classify(
             pending.category,
             rcode,
-            message.answer_ips,
+            addresses,
             self.sinkhole_ips,
             self.config.expect_for(pending.category),
             qname=pending.qname,
             ignore_internal=self.config.ignore_internal,
+            policy_ede=policy_ede,
         )
+        signal = ""
+        if outcome in (Outcome.BLOCKED.value, Outcome.FALSE_POSITIVE.value):
+            signal = block_signal(rcode, addresses, self.sinkhole_ips)
+        first_ede = message.ede[0][0] if message.ede else None
         self._finalize(
             pending,
             rcode,
@@ -762,6 +811,9 @@ class DnsLoadEngine:
             answer_repr,
             message.raw_len,
             time.time(),
+            signal=signal,
+            ede=first_ede if policy_ede is None else policy_ede,
+            nsid=message.nsid_text,
         )
 
     def _handle_socket_error(self, protocol: _QueryProtocol, exc: Exception) -> None:
@@ -790,6 +842,10 @@ class DnsLoadEngine:
         answer_repr: str,
         bytes_received: int,
         now: float,
+        *,
+        signal: str = "",
+        ede: int | None = None,
+        nsid: str = "",
     ) -> None:
         """The single place a completed query is recorded.  Keeping it in one
         method is what guarantees ``rates``, ``by_category`` and ``verdict`` can
@@ -811,6 +867,9 @@ class DnsLoadEngine:
             bytes_received=bytes_received,
             answer_ip=answer_repr,
             now=now,
+            signal=signal,
+            ede=ede_label(ede) if ede is not None else "",
+            nsid=nsid,
         )
         if self.record_log is not None:
             # Written on completion, not on send, because a record log with no
@@ -832,6 +891,7 @@ class DnsLoadEngine:
                     answer_repr,
                     pending.bytes_sent,
                     bytes_received,
+                    "" if ede is None else str(ede),
                 )
             )
 

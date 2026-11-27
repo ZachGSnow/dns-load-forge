@@ -31,7 +31,7 @@ scripts/
   Invoke-DnsLoadForge.ps1   PowerShell front end
   New-LabSourceIPs.ps1      create/remove the source-IP pool (elevated)
   Get-DnsLoadForgeCapture.ps1  pktmon wire capture + reconcile (elevated)
-tests/                     292 tests; no network required
+tests/                     314 tests; no network required
 runs/                      per-query record logs (gitignored)
 lists/cache/               fetched domain lists in a checkout (gitignored); a pip install uses
                            %LOCALAPPDATA%\dnsloadforge or ~/.cache/dnsloadforge instead
@@ -159,6 +159,16 @@ onto a copy of the `RunConfig`:
   `SinkholeSet` checks exact addresses first (a hash hit) and only parses networks on a miss.
 * `kind` - `public` excuses NXDOMAIN for internal-only names (`*.local`, `*.corp`, ...) and
   applies the 100 qps limit; `appliance` expects AD names to resolve.
+
+Two more inputs reach `classify()` from the wire. An **Extended DNS Error** in the policy
+range (4 Forged Answer, 15 Blocked, 16 Censored, 17 Filtered, 18 Prohibited) is the filter
+saying it applied a policy, so it is a block whatever the answer looks like; filters do
+not agree on which code a block gets, so all five count. And the **address hints in
+HTTPS/SVCB records** are passed in with the A/AAAA addresses, because a browser connects to
+them directly: a block-listed name whose HTTPS answer carries real hints has leaked. The
+engine also names the mechanism behind each block (`block_signal()`: NXDOMAIN, REFUSED,
+sinkhole, no records, an unlisted address known only by its EDE), which is what the
+dashboard and the comparison show as "blocks with".
 
 NXDOMAIN for a reverse (`*.arpa`) name is neutral for every target: most addresses have no
 PTR record, and the answer says nothing about the filter. The expectations reach both

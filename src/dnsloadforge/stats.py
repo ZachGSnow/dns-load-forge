@@ -238,6 +238,8 @@ class _Finding:
     detail: str
     count: int = 1
     last_seen: float = 0.0
+    qtype: str = ""
+    ede: str = ""
 
 
 class StatsAggregator:
@@ -284,6 +286,11 @@ class StatsAggregator:
         self._domains_tracked = 0
         self._fp: dict[tuple[str, str], _Finding] = {}
         self._fn: dict[tuple[str, str], _Finding] = {}
+        #: How blocked answers were signalled (engine.BLOCK_SIGNALS), the Extended
+        #: DNS Errors seen, and which server instances answered (NSID).
+        self._signals: Counter[str] = Counter()
+        self._ede: Counter[str] = Counter()
+        self._nsids: Counter[str] = Counter()
         #: What each category is expected to do for the target under test.  Starts as
         #: the global default and is replaced per target via :meth:`set_expectations`.
         self._expect: dict[str, str] = dict(CATEGORY_EXPECTED)
@@ -350,6 +357,9 @@ class StatsAggregator:
             self._domains_tracked = 0
             self._fp.clear()
             self._fn.clear()
+            self._signals.clear()
+            self._ede.clear()
+            self._nsids.clear()
             self._frozen_elapsed = None
 
     # -- ingest -------------------------------------------------------------
@@ -417,8 +427,15 @@ class StatsAggregator:
         bytes_received: int = 0,
         answer_ip: str = "",
         now: float | None = None,
+        signal: str = "",
+        ede: str = "",
+        nsid: str = "",
     ) -> None:
-        """Fold one completed query into every rollup that needs it."""
+        """Fold one completed query into every rollup that needs it.
+
+        ``signal`` names how a block was signalled, ``ede`` is the Extended DNS Error
+        the answer carried (``"17 Filtered"``) and ``nsid`` the answering server
+        instance, each empty when there was none."""
         now = now if now is not None else time.time()
         with self._lock:
             bucket = self._roll(now)
@@ -481,9 +498,16 @@ class StatsAggregator:
             self._observe_domain(qname, category, outcome, latency_ms, now)
             self._observe_client(client_ip, outcome, now)
             if outcome == Outcome.FALSE_POSITIVE.value:
-                self._remember(self._fp, qname, client_ip, category, rcode, now)
+                self._remember(self._fp, qname, client_ip, category, rcode, now, qtype, ede)
             elif outcome == Outcome.FALSE_NEGATIVE.value:
-                self._remember(self._fn, qname, client_ip, category, answer_ip or "resolved", now)
+                self._remember(self._fn, qname, client_ip, category, answer_ip or "resolved", now, qtype, ede)
+            if signal:
+                self._signals[signal] += 1
+            if ede:
+                self._ede[ede] += 1
+            # Bounded: a misbehaving server could send a different NSID every time.
+            if nsid and (nsid in self._nsids or len(self._nsids) < 64):
+                self._nsids[nsid] += 1
 
     def _observe_domain(self, qname: str, category: str, outcome: str, latency_ms: float, now: float) -> None:
         stat = self._domains.get(qname)
@@ -516,15 +540,21 @@ class StatsAggregator:
         category: str,
         detail: str,
         now: float,
+        qtype: str = "",
+        ede: str = "",
     ) -> None:
         key = (qname, client_ip)
         existing = store.get(key)
         if existing is None:
-            store[key] = _Finding(qname=qname, client_ip=client_ip, category=category, detail=detail, last_seen=now)
+            store[key] = _Finding(
+                qname=qname, client_ip=client_ip, category=category, detail=detail, last_seen=now, qtype=qtype, ede=ede
+            )
         else:
             existing.count += 1
             existing.detail = detail
             existing.last_seen = now
+            existing.qtype = qtype
+            existing.ede = ede
 
     def on_drop(self, count: int = 1) -> None:
         """Queries the generator refused to send because the in-flight budget was full.
@@ -714,6 +744,12 @@ class StatsAggregator:
             "top_clients": top_clients,
             "false_positives": self._findings(self._fp, "rcode"),
             "false_negatives": self._findings(self._fn, "answer"),
+            "block_signals": dict(self._signals),
+            "ede": [
+                {"code": int(label.split(" ", 1)[0]), "name": label.split(" ", 1)[1], "count": count}
+                for label, count in self._ede.most_common(12)
+            ],
+            "nsid": [{"id": ident, "count": count} for ident, count in self._nsids.most_common(10)],
             "verdict": self._verdict_locked(rcodes, outcomes),
         }
 
@@ -728,6 +764,8 @@ class StatsAggregator:
                 "last_seen": finding.last_seen,
             }
             row[detail_key] = finding.detail
+            row["qtype"] = finding.qtype
+            row["ede"] = finding.ede
             rows.append(row)
         return rows
 

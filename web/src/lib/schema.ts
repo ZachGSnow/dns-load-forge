@@ -118,6 +118,20 @@ export interface FindingRow {
   answer?: string
   count?: number
   last_seen?: number
+  qtype?: string
+  /** The Extended DNS Error the answer carried, as "17 Filtered", or "". */
+  ede?: string
+}
+
+export interface EdeRow {
+  code: number
+  name?: string
+  count?: number
+}
+
+export interface NsidRow {
+  id: string
+  count?: number
 }
 
 export interface Verdict {
@@ -138,6 +152,11 @@ export interface Snapshot {
   top_clients?: ClientRow[]
   false_positives?: FindingRow[]
   false_negatives?: FindingRow[]
+  /** How blocked answers were signalled: nxdomain, refused, sinkhole, nodata,
+   *  address (an unlisted block page, known only by its EDE), servfail, other. */
+  block_signals?: Record<string, number>
+  ede?: EdeRow[]
+  nsid?: NsidRow[]
   verdict?: Verdict
 }
 
@@ -181,6 +200,8 @@ export interface HistoryRun {
   blocked?: number
   leaked?: number
   false_positives?: number
+  block_signals?: Record<string, number>
+  ede?: EdeRow[]
 }
 
 export interface HistoryPayload {

@@ -71,6 +71,10 @@ def summarise_run(snapshot: dict, config: RunConfig, *, index: int = 0) -> dict:
         "blocked": blocked,
         "leaked": leaked,
         "false_positives": harmed,
+        # How this target signals a block, so filters can be compared on what users
+        # will actually see: an NXDOMAIN, a block page, a refusal.
+        "block_signals": dict(snapshot.get("block_signals", {})),
+        "ede": list(snapshot.get("ede", [])),
         "by_category": [
             {
                 key: row.get(key)
