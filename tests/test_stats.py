@@ -410,6 +410,37 @@ class TestVerdict(unittest.TestCase):
         self.assertEqual(verdict["status"], "degraded")
         self.assertIn("Leaking known-bad", verdict["note"])
 
+    def test_no_block_listed_traffic_is_not_called_filtering(self) -> None:
+        """Measured: with the block lists never fetched, a run against the mock sent
+        only allow-listed and borderline names and reported "Filtering correctly. 0
+        block-listed queries were refused" -- a pass for a test that never ran."""
+        plan = [(Category.ALLOW_POPULAR.value, "NOERROR", Outcome.ALLOWED.value)] * 250
+        plan += [(Category.BORDERLINE.value, "NOERROR", Outcome.ALLOWED.value)] * 100
+        verdict = self._run(plan)
+        self.assertEqual(verdict["status"], "unknown")
+        self.assertIn("not tested", verdict["note"])
+        self.assertIn("lists --refresh", verdict["note"])
+
+
+class TestRates(AggregatorCase):
+    """Per-second rates must come from seconds that have finished."""
+
+    def test_rates_ignore_the_second_still_filling_and_the_partial_first_one(self) -> None:
+        """Measured: a run sending ~800 qps showed "Sent qps 378, 85% of target"
+        because the rate was read from the bucket still filling."""
+        base = 1_700_000_000.0
+        self.send(37, base + 0.7)  # the run began 0.7 s into this second
+        for second in range(1, 7):
+            self.send(100, base + second)
+        self.send(25, base + 7.25)  # a quarter of the way through the current second
+        rates = self.stats.snapshot()["rates"]
+        self.assertEqual(rates["qps_sent"], 100.0)
+        self.assertEqual(rates["qps_sent_avg"], 100.0)
+
+    def test_rates_are_zero_until_a_second_has_finished(self) -> None:
+        self.send(40, 1_700_000_000.3)
+        self.assertEqual(self.stats.snapshot()["rates"]["qps_sent"], 0.0)
+
 
 class TestRecordLog(unittest.TestCase):
     def setUp(self) -> None:

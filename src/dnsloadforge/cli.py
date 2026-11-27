@@ -1189,12 +1189,13 @@ def cmd_bench(args: argparse.Namespace) -> int:
         )
         stats = StatsAggregator()
         try:
-            run_threaded(config, catalogue, stats=stats, threads=1)
+            runs = run_threaded(config, catalogue, stats=stats, threads=1)
         except ValueError as exc:
             print(f"  cannot benchmark: {exc}")
             return 2
-        snapshot = stats.snapshot()
-        achieved = snapshot["rates"]["qps_sent_avg"]
+        # Queries over the sending window, from the engine's own counters: exact, where
+        # the dashboard's 5-second average is a sampling of whole seconds.
+        achieved = round(sum(r.achieved_qps for r in runs), 1)
         results[f"gen-{int(qps)}"] = {"target": qps, "achieved": achieved}
         print(f"  {label:26s} target {qps:>7,.0f} qps -> achieved {achieved:>9,.0f} qps"
               f"  ({100.0 * achieved / qps:.0f}% of target)")
@@ -1220,9 +1221,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
                 threads=1,
             )
             stats = StatsAggregator()
-            run_threaded(config, catalogue, stats=stats, threads=1)
+            runs = run_threaded(config, catalogue, stats=stats, threads=1)
             snapshot = stats.snapshot()
-            achieved = snapshot["rates"]["qps_sent_avg"]
+            achieved = round(sum(r.achieved_qps for r in runs), 1)
             loss = snapshot["rates"]["error_pct"]
             dropped = snapshot["rates"]["dropped_pct"]
             results[f"e2e-{int(qps)}"] = {
