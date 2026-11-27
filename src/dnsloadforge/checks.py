@@ -35,6 +35,7 @@ from . import packets as pk
 
 __all__ = [
     "CHECKS",
+    "context_for_target",
     "CheckContext",
     "CheckResult",
     "Exchange",
@@ -59,9 +60,8 @@ KNOWN_BLOCK_ADDRESSES: frozenset[str] = frozenset(
         "::",
         "127.0.0.1",
         "::1",
-        # Cisco Umbrella / OpenDNS block pages.
+        # Cisco Umbrella / OpenDNS block pages (AAAA answers carry them IPv4-mapped).
         *(f"146.112.61.{n}" for n in (104, 105, 106, 107, 108, 110)),
-        *(f"::ffff:146.112.61.{n}" for n in (104, 105, 106, 107, 108, 110)),
         # Cloudflare Gateway block page.
         "162.159.36.12",
         "162.159.46.12",
@@ -235,6 +235,23 @@ def tcp_reachable(host: str, port: int, timeout: float = 1.5) -> tuple[bool, str
         return False, exc.strerror or str(exc)
 
 
+def normal_address(ip: str) -> str:
+    """An address in one spelling: an IPv4-mapped IPv6 answer (``::ffff:9270:3d6a``,
+    how OpenDNS sends its block page in AAAA) becomes the IPv4 address it carries."""
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if address.version == 6 and address.ipv4_mapped is not None:
+        return str(address.ipv4_mapped)
+    return str(address)
+
+
+def _is_known_block(ip: str, sinkholes: Iterable[str] = ()) -> bool:
+    known = KNOWN_BLOCK_ADDRESSES | {normal_address(s) for s in sinkholes}
+    return normal_address(ip) in known
+
+
 def block_reason(exchange: Exchange, sinkholes: Iterable[str] = ()) -> str:
     """How an answer says "blocked", or "" when it resolved (or did not answer)."""
     if exchange.error:
@@ -244,9 +261,8 @@ def block_reason(exchange: Exchange, sinkholes: Iterable[str] = ()) -> str:
         return f"EDE {pk.ede_label(code)}"
     if exchange.rcode in ("NXDOMAIN", "REFUSED", "SERVFAIL"):
         return exchange.rcode
-    known = KNOWN_BLOCK_ADDRESSES | set(sinkholes)
-    if exchange.addresses and all(ip in known for ip in exchange.addresses):
-        return f"block page {exchange.addresses[0]}"
+    if exchange.addresses and all(_is_known_block(ip, sinkholes) for ip in exchange.addresses):
+        return f"block page {normal_address(exchange.addresses[0])}"
     if not exchange.addresses and not exchange.cnames:
         return "no records"
     return ""
@@ -296,8 +312,10 @@ class CheckContext:
     timeout: float = 2.0
     ask: Asker = ask
     connect: Connector = tcp_reachable
-    #: Names the vendor check found blocked on A, for the cross-type check.
+    #: Names the vendor check found blocked on A, for the cross-type check, with
+    #: what each is a test of ("malware", "adult", ...).
     blocked_names: list[str] = field(default_factory=list)
+    blocked_kinds: dict[str, str] = field(default_factory=dict)
 
     def query(self, qname: str, qtype: str = "A", **kwargs) -> Exchange:
         return self.ask(self.server, self.port, qname, qtype, timeout=self.timeout, **kwargs)
@@ -321,6 +339,14 @@ def _txt_value(exchange: Exchange, key: str) -> str:
     return ""
 
 
+def _is_address(text: str) -> bool:
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return True
+
+
 def _asn_name(ctx: CheckContext, address: str) -> str:
     """The AS that owns an address, from Team Cymru's DNS interface."""
     try:
@@ -340,6 +366,7 @@ def _asn_name(ctx: CheckContext, address: str) -> str:
         return ""
     owner = ctx.query(f"AS{asn}.asn.cymru.com", "TXT")
     owner_text = "".join(owner.txt[0]) if owner.txt else ""
+    # "13335 | US | arin | 2010-07-14 | CLOUDFLARENET - Cloudflare, Inc., US"
     label = owner_text.split("|")[-1].strip() if owner_text.count("|") >= 4 else ""
     return f"AS{asn} {label}".strip()
 
@@ -357,20 +384,24 @@ def check_identity(ctx: CheckContext) -> CheckResult:
             "Check the address and port, and that this machine is allowed to query it.",
             evidence,
         )
-    egress = _txt_value(akamai, "ns") or (google.txt[0][0] if google.txt and google.txt[0] else "")
+    egress = _txt_value(akamai, "ns") or next(
+        (r[0] for r in google.txt if r and _is_address(r[0])), ""
+    )
     subnet = _txt_value(akamai, "ecs") or next(
         (" ".join(r[1:]) for r in google.txt if r and r[0].startswith("edns0-client-subnet")), ""
     )
+    # Akamai writes subnet/source-prefix/scope-prefix ("192.0.2.0/24/24").
+    subnet = "/".join(subnet.split("/")[:2]) if subnet else ""
     owner = _asn_name(ctx, egress) if egress else ""
     names = [e.nsid for e in (probe, akamai, google) if e.nsid] + [
-        " ".join(e.txt[0]) for e in chaos if e.txt and e.txt[0]
+        " ".join(e.txt[0]) for e in chaos if e.txt and e.txt[0] and e.qname != "version.bind"
     ]
     parts = []
     if names:
         parts.append(f"answers as {', '.join(dict.fromkeys(names))}")
     if egress:
         parts.append(f"reaches the internet from {egress}" + (f" ({owner})" if owner else ""))
-    parts.append(f"passes your client subnet ({subnet}) upstream" if subnet else "passes no client subnet upstream")
+    parts.append(f"passes a client subnet ({subnet}) upstream" if subnet else "passes no client subnet upstream")
     version = next((" ".join(e.txt[0]) for e in chaos if e.qname == "version.bind" and e.txt and e.txt[0]), "")
     if version:
         parts.append(f"reports its version as {version!r}")
@@ -674,6 +705,7 @@ def check_vendor_tests(ctx: CheckContext) -> CheckResult:
         if reason:
             blocked_by.setdefault(vendor, []).append(kind)
             ctx.blocked_names.append(name)
+            ctx.blocked_kinds[name] = kind
     if not any(p.answered for p in probes):
         return CheckResult("vendor-tests", "Policy", "Vendor test domains", "error", "No answer.", "", rows)
     total = sum(len(v) for v in blocked_by.values())
@@ -691,6 +723,9 @@ def check_vendor_tests(ctx: CheckContext) -> CheckResult:
     )
 
 
+_SECURITY_KINDS = frozenset({"malware", "phishing", "botnet", "command and control"})
+
+
 def check_cross_type(ctx: CheckContext) -> CheckResult:
     candidates = list(dict.fromkeys([*ctx.blocked_names, *ctx.samples]))[:8]
     probes = ctx.query_many([(name, "A") for name in candidates]) if candidates else []
@@ -702,14 +737,18 @@ def check_cross_type(ctx: CheckContext) -> CheckResult:
         )
     probes = ctx.query_many([(name, qtype) for name in names for qtype in ("AAAA", "HTTPS", "TXT", "MX")])
     evidence = [p.as_dict() for p in probes]
-    known = KNOWN_BLOCK_ADDRESSES | set(ctx.sinkholes)
     address_leaks = sorted(
         {f"{p.qname} {p.qtype}" for p in probes
-         if p.qtype in ("AAAA", "HTTPS") and not p.policy_ede and any(ip not in known for ip in p.addresses)}
+         if p.qtype in ("AAAA", "HTTPS") and not p.policy_ede
+         and any(not _is_known_block(ip, ctx.sinkholes) for ip in p.addresses)}
     )
+    # TXT and MX matter as a tunnel for malware, so only security names are judged:
+    # Umbrella documents that it blocks TXT for security categories and deliberately
+    # not for content ones, and an adult site's TXT record carries nothing.
     data_leaks = sorted(
         {f"{p.qname} {p.qtype}" for p in probes
-         if p.qtype in ("TXT", "MX") and not p.policy_ede and p.rcode == "NOERROR" and p.has_data}
+         if p.qtype in ("TXT", "MX") and not p.policy_ede and p.rcode == "NOERROR" and p.has_data
+         and ctx.blocked_kinds.get(p.qname, "malware") in _SECURITY_KINDS}
     )
     if address_leaks:
         return CheckResult(
@@ -748,6 +787,35 @@ CHECKS: tuple[tuple[str, Callable[[CheckContext], CheckResult], bool], ...] = (
     ("vendor-tests", check_vendor_tests, False),
     ("cross-type", check_cross_type, False),
 )
+
+
+def context_for_target(
+    target,
+    *,
+    network: bool = True,
+    timeout: float = 2.0,
+    samples: Sequence[str] | None = None,
+    cache_dir: str | None = None,
+) -> CheckContext:
+    """The checks' view of a :class:`~dnsloadforge.targets.Target`: its address and
+    the rules it is judged by.  ``samples`` are block-listed names for the
+    cross-type check; by default the first few of the cached threat lists."""
+    from .domainlist import cached_names
+    from .targets import BLOCK_CATEGORIES
+
+    if samples is None:
+        samples = cached_names(["urlhaus", "phishing-army", "blocklistproject-malware"], 6, cache_dir)
+    return CheckContext(
+        server=target.server,
+        port=target.port,
+        target_name=target.name,
+        kind=target.kind,
+        blocks=tuple(target.blocks if target.blocks is not None else BLOCK_CATEGORIES),
+        sinkholes=tuple(target.sinkhole_ips),
+        samples=tuple(samples),
+        network=network,
+        timeout=timeout,
+    )
 
 
 def run_checks(ctx: CheckContext, only: Iterable[str] | None = None, progress: Callable[[str], None] | None = None) -> list[CheckResult]:

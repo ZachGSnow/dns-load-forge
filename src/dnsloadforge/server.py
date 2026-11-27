@@ -49,7 +49,7 @@ from .domainlist import (
 from .engine import DnsLoadEngine, RunResult, run_threaded
 from .spec import RunConfig
 from .stats import RecordLog, StatsAggregator
-from .targets import Target, find_target, public_target_problem
+from .targets import Target, adhoc_target, find_target, public_target_problem
 
 __all__ = [
     "RunController",
@@ -221,6 +221,7 @@ class RunController:
         self._plan: list[RunConfig] = []
         self._job: dict = {"kind": "", "state": "idle"}
         self._job_thread: threading.Thread | None = None
+        self._checks: dict = {"state": "idle", "results": []}
 
         self.stats.set_expectations(config.expectations)
         self.stats.set_run(
@@ -354,6 +355,12 @@ class RunController:
                     "ok": False,
                     "state": self._state,
                     "message": "domain lists are being updated; wait for that to finish before starting a run",
+                }
+            if self._checks.get("state") == "running":
+                return {
+                    "ok": False,
+                    "state": self._state,
+                    "message": "deployment checks are running; wait for them to finish before starting a run",
                 }
             payload = payload or {}
             try:
@@ -662,6 +669,87 @@ class RunController:
         return self._begin_job("enable" if enabled else "disable", 1, work)
 
 
+    # -- deployment checks -------------------------------------------------
+
+    def checks_payload(self) -> dict:
+        with self._lock:
+            return {**self._checks, "results": list(self._checks.get("results", []))}
+
+    def _check_target(self, name: str | None) -> Target:
+        if name:
+            return find_target(name, self.targets)
+        if self.config.target_name:
+            try:
+                return find_target(self.config.target_name, self.targets)
+            except ValueError:
+                pass
+        return adhoc_target(self.config.server, self.config.port)
+
+    def start_checks(self, payload: dict | None = None) -> dict:
+        """Run the deployment checks on a background thread.
+
+        Refused during a run: the checks share this machine's network with the
+        sender, and a few dozen extra queries in the middle of a latency
+        measurement are exactly the noise the run exists to exclude.
+        """
+        from .checks import context_for_target, run_checks, summarise
+
+        payload = payload or {}
+        name = payload.get("target")
+        if name is not None and not isinstance(name, str):
+            return {"ok": False, "message": "target must be a target name"}
+        network = payload.get("network", True)
+        if not isinstance(network, bool):
+            return {"ok": False, "message": "network must be true or false"}
+        try:
+            target = self._check_target(name)
+        except ValueError as exc:
+            return {"ok": False, "message": str(exc)}
+        with self._lock:
+            if self._state == "running":
+                return {"ok": False, "message": "stop the current run before running checks"}
+            if self._checks.get("state") == "running":
+                return {"ok": False, "message": "the checks are already running"}
+            self._checks = {
+                "state": "running",
+                "target": target.as_dict(),
+                "network": network,
+                "current": "",
+                "started_at": time.time(),
+                "finished_at": 0.0,
+                "results": [],
+                "summary": {},
+                "error": "",
+            }
+        samples = []
+        for category in ("block_malware", "block_phishing"):
+            samples += self.catalogue.domains_for(category)[:3]
+        context = context_for_target(target, network=network, samples=samples)
+
+        def progress(check_id: str) -> None:
+            with self._lock:
+                self._checks["current"] = check_id
+
+        def runner() -> None:
+            try:
+                results = run_checks(context, progress=progress)
+                with self._lock:
+                    self._checks.update(
+                        state="done",
+                        current="",
+                        finished_at=time.time(),
+                        results=[r.as_dict() for r in results],
+                        summary=summarise(results),
+                    )
+            except Exception as exc:  # noqa: BLE001 - reported through the dashboard
+                with self._lock:
+                    self._checks.update(state="error", current="", finished_at=time.time(), error=f"{type(exc).__name__}: {exc}")
+
+        threading.Thread(target=runner, name="dnsloadforge-checks", daemon=True).start()
+        self._log(f"deployment checks started against {target.name}")
+        return {"ok": True, "message": f"checking {target.name}"}
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "DnsLoadForge"
     protocol_version = "HTTP/1.1"
@@ -792,6 +880,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "state": self.controller.state, "time": time.time()})
             elif route == "/api/licenses":
                 self._serve_notices()
+            elif route == "/api/checks":
+                self._send_json(self.controller.checks_payload())
             elif route == "/api/run/export.jsonl":
                 self._serve_records("jsonl")
             elif route == "/api/run/export.csv":
@@ -831,6 +921,8 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send_json(self.controller.stop())
                 else:
                     self._error_json(HTTPStatus.BAD_REQUEST, "action must be 'start', 'compare' or 'stop'")
+            elif route == "/api/checks/run":
+                self._send_json(self.controller.start_checks(payload))
             elif route == "/api/sources/refresh":
                 slugs = payload.get("slugs")
                 if slugs is not None and not (isinstance(slugs, list) and all(isinstance(s, str) for s in slugs)):

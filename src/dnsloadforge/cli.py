@@ -1385,36 +1385,15 @@ def main(argv: list[str] | None = None) -> int:
 _STATUS_MARK = {"pass": "pass", "warn": "WARN", "fail": "FAIL", "error": "ERR ", "info": "info", "skip": "skip"}
 
 
-def check_context(target: Target, *, network: bool, timeout: float = 2.0, cache_dir: str | None = None,
-                  samples: Sequence[str] | None = None) -> "CheckContext":
-    """The checks' view of a target: its address and the rules it is judged by."""
-    from .checks import CheckContext
-    from .domainlist import cached_names
-
-    if samples is None:
-        samples = cached_names(["urlhaus", "phishing-army", "blocklistproject-malware"], 6, cache_dir)
-    return CheckContext(
-        server=target.server,
-        port=target.port,
-        target_name=target.name,
-        kind=target.kind,
-        blocks=tuple(target.blocks if target.blocks is not None else BLOCK_CATEGORIES),
-        sinkholes=tuple(target.sinkhole_ips),
-        samples=tuple(samples),
-        network=network,
-        timeout=timeout,
-    )
-
-
 def cmd_checks(args: argparse.Namespace) -> int:
     """Deployment checks against one target, printed as a table or JSON."""
-    from .checks import run_checks, summarise
+    from .checks import context_for_target, run_checks, summarise
 
     _available, chosen = resolve_targets(args)
     if len(chosen) > 1:
         raise ValueError("checks run against one target at a time")
     target = chosen[0]
-    ctx = check_context(target, network=not args.no_network, timeout=args.timeout, cache_dir=args.cache_dir)
+    ctx = context_for_target(target, network=not args.no_network, timeout=args.timeout, cache_dir=args.cache_dir)
     quiet = getattr(args, "json", False)
     if not quiet:
         print(f"DNS Load Forge {__version__} -- deployment checks against {target.name} ({target.server}:{target.port})")
