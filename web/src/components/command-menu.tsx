@@ -57,7 +57,7 @@ export function CommandMenu({
       <Button
         variant="outline"
         size="sm"
-        className="hidden w-48 justify-between text-muted-foreground md:flex"
+        className="hidden w-48 justify-between text-muted-foreground @2xl/header:flex"
         onClick={() => setOpen(true)}
       >
         <span className="flex items-center gap-2">

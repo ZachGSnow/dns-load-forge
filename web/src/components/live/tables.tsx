@@ -341,7 +341,7 @@ export function TopDomains({
   }, [rows, sort])
 
   return (
-    <Card className="lg:col-span-2">
+    <Card className="@2xl/main:col-span-2">
       <CardHeader>
         <CardTitle>Top queried domains</CardTitle>
         <CardDescription>

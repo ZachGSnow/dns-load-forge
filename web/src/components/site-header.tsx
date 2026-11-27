@@ -27,7 +27,7 @@ export function SiteHeader({
   const stopping = state === "stopping"
 
   return (
-    <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
+    <header className="@container/header sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/70">
       <div className="flex w-full items-center gap-2 px-4 lg:px-6">
         <SidebarTrigger className="-ml-1" />
         <Separator
@@ -36,12 +36,12 @@ export function SiteHeader({
         />
         <div className="flex min-w-0 flex-col">
           <h1 className="truncate text-sm font-semibold">{page.label}</h1>
-          <p className="hidden truncate text-xs text-muted-foreground lg:block">
+          <p className="hidden truncate text-xs text-muted-foreground @3xl/header:block">
             {page.description}
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <div className="hidden items-center gap-2 sm:flex">
+          <div className="hidden items-center gap-2 @xl/header:flex">
             <RunStateBadge state={state} />
             <ConnectionBadge connection={connection} />
           </div>

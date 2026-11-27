@@ -24,21 +24,21 @@ export function LivePage() {
       <RunSetup />
       <KpiCards snapshot={snapshot} />
       <ConnectionsCard snapshot={snapshot} />
-      <div className="grid gap-4 lg:grid-cols-3 lg:gap-6">
+      <div className="grid gap-4 lg:gap-6 @2xl/main:grid-cols-3">
         <TrafficChart series={series} />
         <OutcomesCard snapshot={snapshot} />
       </div>
-      <div className="grid gap-4 lg:grid-cols-3 lg:gap-6">
+      <div className="grid gap-4 lg:gap-6 @2xl/main:grid-cols-3">
         <LatencyCard latency={snapshot?.latency_ms ?? {}} series={series} />
         <RcodeCard snapshot={snapshot} />
       </div>
       <BlockSignalsCard snapshot={snapshot} />
       <CategoryTable snapshot={snapshot} />
-      <div className="grid gap-4 xl:grid-cols-2 xl:gap-6">
+      <div className="grid gap-4 xl:gap-6 @4xl/main:grid-cols-2">
         <FindingsCard kind="fp" rows={snapshot?.false_positives ?? []} />
         <FindingsCard kind="fn" rows={snapshot?.false_negatives ?? []} />
       </div>
-      <div className="grid gap-4 lg:grid-cols-3 lg:gap-6">
+      <div className="grid gap-4 lg:gap-6 @2xl/main:grid-cols-3">
         <TopDomains
           rows={snapshot?.top_domains ?? []}
           unique={num(snapshot?.totals?.unique_domains)}

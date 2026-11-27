@@ -147,7 +147,7 @@ export function KpiCards({ snapshot }: { snapshot: Snapshot | null }) {
   ]
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
+    <div className="grid grid-cols-1 gap-4 @lg/main:grid-cols-2 @2xl/main:grid-cols-3 @6xl/main:grid-cols-6">
       {kpis.map((kpi) => (
         <KpiCard key={kpi.label} kpi={kpi} />
       ))}
