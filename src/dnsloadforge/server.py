@@ -169,6 +169,20 @@ def dumps(payload) -> bytes:
         return json.dumps(_sanitise(payload)).encode("utf-8")
 
 
+def _number(payload: dict, key: str, default: float) -> float:
+    """A finite number from a request body, or ``default`` when it is absent.  JSON
+    from a browser can carry NaN, 1e308 or a string; none of them is a rate."""
+    value = payload.get(key)
+    if value is None:
+        return float(default)
+    if isinstance(value, bool):
+        raise ValueError(f"{key} must be a number")
+    number = float(value)
+    if not math.isfinite(number) or abs(number) > MAX_OVERRIDE:
+        raise ValueError(f"{key} must be a finite number no larger than {MAX_OVERRIDE:,.0f}")
+    return number
+
+
 class RunController:
     """Owns the lifecycle of runs so the HTTP layer never touches an engine.
 
@@ -222,6 +236,7 @@ class RunController:
         self._job: dict = {"kind": "", "state": "idle"}
         self._job_thread: threading.Thread | None = None
         self._checks: dict = {"state": "idle", "results": []}
+        self._capacity: dict = {"state": "idle", "steps": []}
 
         self.stats.set_expectations(config.expectations)
         self.stats.set_run(
@@ -363,6 +378,8 @@ class RunController:
                     "state": self._state,
                     "message": "deployment checks are running; wait for them to finish before starting a run",
                 }
+            if self._capacity.get("state") == "running":
+                return {"ok": False, "state": self._state, "message": "a capacity search is running"}
             payload = payload or {}
             try:
                 overrides = self._validated_overrides(payload)
@@ -671,6 +688,158 @@ class RunController:
         return self._begin_job("enable" if enabled else "disable", 1, work)
 
 
+    # -- capacity search ---------------------------------------------------
+
+    def capacity_payload(self) -> dict:
+        with self._lock:
+            return {**self._capacity, "steps": list(self._capacity.get("steps", []))}
+
+    def start_capacity(self, payload: dict | None = None) -> dict:
+        """Search for the highest rate the target sustains, on a background thread.
+
+        Each step is a run like any other, so the live view shows it as it
+        happens; the steps are kept here rather than in the comparison history,
+        which they would otherwise fill with a dozen near-identical rows.
+        """
+        from dataclasses import asdict
+
+        from .capacity import CapacityPlan, Slo
+
+        payload = payload or {}
+        try:
+            plan = CapacityPlan(
+                start_qps=_number(payload, "start_qps", 200.0),
+                max_qps=_number(payload, "max_qps", 20_000.0),
+                growth=_number(payload, "growth", 1.5),
+                step_s=_number(payload, "step_s", 20.0),
+                refine=int(_number(payload, "refine", 2)),
+            )
+            plan.validate()
+            limits = payload.get("slo") or {}
+            if not isinstance(limits, dict):
+                raise ValueError("slo must be an object")
+            slo = Slo(
+                loss_pct=_number(limits, "loss_pct", 1.0),
+                servfail_pct=_number(limits, "servfail_pct", 1.0),
+                p95_ms=_number(limits, "p95_ms", 100.0),
+            )
+            slo.validate()
+            name = payload.get("target") or self.config.target_name
+            if name is not None and not isinstance(name, str):
+                raise ValueError("target must be a target name")
+            target = self._check_target(name or None)
+            problem = public_target_problem(target, plan.max_qps, self._allow_public_target)
+            if problem:
+                raise ValueError(problem)
+        except (TypeError, ValueError) as exc:
+            return {"ok": False, "state": self.state, "message": f"bad parameter: {exc}"}
+
+        with self._lock:
+            if self._state == "running":
+                return {"ok": False, "state": self._state, "message": "a run is already in progress"}
+            if self._job.get("state") == "running" or self._checks.get("state") == "running":
+                return {"ok": False, "state": self._state, "message": "wait for the list update or the checks to finish"}
+            base = target.apply(self.config)
+            self._state = "running"
+            self._stop_requested = False
+            self._error = ""
+            self._results = []
+            self._capacity = {
+                "state": "running",
+                "target": target.as_dict(),
+                "plan": asdict(plan),
+                "slo": asdict(slo),
+                "estimate_s": round(plan.estimate_s()),
+                "started_at": time.time(),
+                "finished_at": 0.0,
+                "current": None,
+                "steps": [],
+                "result": None,
+                "error": "",
+            }
+        self._thread = threading.Thread(
+            target=self._supervise_capacity, args=(base, plan, slo), name="dnsloadforge-capacity", daemon=True
+        )
+        self._thread.start()
+        message = f"capacity search on {target.name}, {plan.start_qps:,.0f} to {plan.max_qps:,.0f} qps"
+        self._log(message)
+        return {"ok": True, "state": "running", "message": f"started a {message}"}
+
+    def _supervise_capacity(self, base: RunConfig, plan, slo) -> None:
+        from .capacity import search
+
+        def run_step(rate: float) -> tuple[dict, float]:
+            config = replace(base, target_qps=float(rate), duration_s=float(plan.step_s))
+            with self._lock:
+                self._plan = [config]
+                self._prepare_run_locked(config, 0)
+            self.stats.set_run(capacity_rate=float(rate))
+            self.stats.set_state("running")
+            results = run_threaded(
+                config,
+                self.catalogue,
+                stats=self.stats,
+                threads=max(1, config.threads),
+                on_engine=self._register_engine,
+            )
+            with self._lock:
+                self._results = results
+            return self.stats.snapshot(), sum(r.achieved_qps for r in results)
+
+        def on_start(index: int, phase: str, rate: float) -> None:
+            with self._lock:
+                self._capacity["current"] = {
+                    "index": index,
+                    "phase": phase,
+                    "target_qps": rate,
+                    "started_at": time.time(),
+                }
+
+        def on_step(step) -> None:
+            with self._lock:
+                self._capacity["steps"].append(step.as_dict())
+                self._capacity["current"] = None
+            self._log(f"capacity step {step.index}: {step.target_qps:,.0f} qps {step.status}")
+
+        try:
+            result = search(
+                plan,
+                slo,
+                run_step,
+                should_stop=lambda: self._stop_requested,
+                on_step=on_step,
+                on_start=on_start,
+                pause=self._pause,
+            )
+            with self._lock:
+                self._capacity.update(
+                    state=result.state,
+                    finished_at=time.time(),
+                    current=None,
+                    result={
+                        "sustained_qps": result.sustained_qps,
+                        "knee_qps": result.knee_qps,
+                        "limit": result.limit,
+                        "summary": result.summary,
+                    },
+                )
+            self._log(f"capacity search finished: {result.summary}")
+        except BaseException as exc:  # noqa: BLE001 - surfaced through the dashboard
+            with self._lock:
+                self._error = f"{type(exc).__name__}: {exc}"
+                self._capacity.update(state="error", error=self._error, finished_at=time.time(), current=None)
+            self._log(f"capacity search failed: {self._error}")
+        finally:
+            with self._lock:
+                self._state = "stopped"
+            if not self._error:
+                self.stats.set_state("stopped")
+
+    def _pause(self, seconds: float) -> None:
+        deadline = time.time() + seconds
+        while time.time() < deadline and not self._stop_requested:
+            time.sleep(0.1)
+
     # -- deployment checks -------------------------------------------------
 
     def checks_payload(self) -> dict:
@@ -893,6 +1062,15 @@ class _Handler(BaseHTTPRequestHandler):
                 self._serve_notices()
             elif route == "/api/checks":
                 self._send_json(self.controller.checks_payload())
+            elif route == "/api/capacity":
+                self._send_json(self.controller.capacity_payload())
+            elif route == "/api/capacity/export.json":
+                self._send(
+                    HTTPStatus.OK,
+                    dumps(self.controller.capacity_payload()),
+                    "application/json",
+                    {"Content-Disposition": 'attachment; filename="dnsloadforge-capacity.json"'},
+                )
             elif route == "/api/run/export.jsonl":
                 self._serve_records("jsonl")
             elif route == "/api/run/export.csv":
@@ -928,10 +1106,12 @@ class _Handler(BaseHTTPRequestHandler):
                         self._error_json(HTTPStatus.BAD_REQUEST, "compare needs a list of targets")
                         return
                     self._send_json(self.controller.start(payload))
+                elif action == "capacity":
+                    self._send_json(self.controller.start_capacity(payload))
                 elif action == "stop":
                     self._send_json(self.controller.stop())
                 else:
-                    self._error_json(HTTPStatus.BAD_REQUEST, "action must be 'start', 'compare' or 'stop'")
+                    self._error_json(HTTPStatus.BAD_REQUEST, "action must be 'start', 'compare', 'capacity' or 'stop'")
             elif route == "/api/checks/run":
                 self._send_json(self.controller.start_checks(payload))
             elif route == "/api/sources/refresh":

@@ -84,7 +84,7 @@ def is_public_resolver(server: str, tls_name: str = "") -> bool:
     """A well-known public resolver, by address or by certificate name."""
     return server in PUBLIC_RESOLVERS or server.lower() in PUBLIC_RESOLVER_NAMES or tls_name.lower() in PUBLIC_RESOLVER_NAMES
 
-COMMANDS = ("run", "serve", "lists", "targets", "mock", "bench", "doctor", "checks")
+COMMANDS = ("run", "serve", "lists", "targets", "mock", "bench", "doctor", "checks", "capacity")
 
 #: Default per-category domain cap.  The full source set is around 5 million
 #: domains, which costs roughly a gigabyte of RAM and 20 seconds of startup; a
@@ -226,6 +226,41 @@ def build_parser() -> argparse.ArgumentParser:
     checks.add_argument("--cache-dir", default=None)
     checks.add_argument("--json", action="store_true", help="emit machine-readable output")
 
+    capacity = sub.add_parser(
+        "capacity",
+        help="find the highest rate the target sustains within the limits you set",
+        description=(
+            "Raise the rate step by step, each step a run of the same office traffic, until the\n"
+            "target breaks a limit (loss, SERVFAIL, rate limiting, p95 latency); then narrow it\n"
+            "down between the last step that passed and the first that failed.  The answer is\n"
+            "the rate this mix of names is served at, and why the next step up failed."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_common_run_args(capacity, rates=False, dashboard=False, evidence=False)
+    steps = capacity.add_argument_group("search")
+    steps.add_argument("--start-qps", type=float, default=200.0, help="the first rate, in queries per second (default: 200)")
+    steps.add_argument("--max-qps", type=float, default=20_000.0, help="the highest rate to try (default: 20000)")
+    steps.add_argument("--growth", type=float, default=1.5, help="each ramp step is this many times the last (default: 1.5)")
+    steps.add_argument("--step-seconds", type=float, default=20.0, help="how long each step runs (default: 20)")
+    steps.add_argument(
+        "--refine",
+        type=int,
+        default=2,
+        help="steps that bisect between the last pass and the first failure (default: 2)",
+    )
+    limits = capacity.add_argument_group("limits each step must meet")
+    limits.add_argument("--slo-loss", type=float, default=1.0, help="most timeouts and errors, %% of queries (default: 1)")
+    limits.add_argument("--slo-servfail", type=float, default=1.0, help="most SERVFAIL answers, %% of answers (default: 1)")
+    limits.add_argument("--slo-p95", type=float, default=100.0, help="highest p95 latency, in ms (default: 100)")
+    limits.add_argument(
+        "--require",
+        type=float,
+        default=None,
+        metavar="QPS",
+        help="exit 1 unless the target sustains at least this rate, for scripts and CI",
+    )
+
     return parser
 
 
@@ -270,7 +305,14 @@ def _add_common_run_args(
     parser: argparse.ArgumentParser,
     duration_default: float = 60.0,
     duration_help: str | None = None,
+    *,
+    rates: bool = True,
+    dashboard: bool = True,
+    evidence: bool = True,
 ) -> None:
+    """The options every traffic-sending command shares.  A command that sets the
+    rate itself (``capacity``) leaves ``rates`` out, and one without a dashboard
+    or a record log leaves those out, rather than accepting flags it would ignore."""
     target = parser.add_argument_group("target")
     target.add_argument("--server", default=None, help="resolver or appliance to test (default: 127.0.0.1)")
     target.add_argument("--port", type=int, default=None, help=_PORT_HELP)
@@ -296,13 +338,14 @@ def _add_common_run_args(
 
     office = parser.add_argument_group("simulated office")
     office.add_argument("--personas", type=int, default=10_000, help="number of simulated workers (default: 10000)")
-    office.add_argument("--qps", type=float, default=5_000.0, help="target queries per second (default: 5000)")
-    office.add_argument(
-        "--duration",
-        type=float,
-        default=duration_default,
-        help=duration_help or "seconds to run; 0 = until stopped (default: 60)",
-    )
+    if rates:
+        office.add_argument("--qps", type=float, default=5_000.0, help="target queries per second (default: 5000)")
+        office.add_argument(
+            "--duration",
+            type=float,
+            default=duration_default,
+            help=duration_help or "seconds to run; 0 = until stopped (default: 60)",
+        )
     office.add_argument("--timeout", type=float, default=2.0, help="per-query timeout in seconds (default: 2)")
     office.add_argument("--seed", type=int, default=1337, help="RNG seed, so two runs are comparable")
     office.add_argument("--role", action="append", default=None, help=f"limit to a role ({', '.join(sorted(ROLES))})")
@@ -329,31 +372,34 @@ def _add_common_run_args(
         help="connections per thread for tcp, tls and https (default: 4 for tcp and tls; https sizes and grows "
         "its pool to the rate)",
     )
-    load.add_argument("--qps-burst", type=float, default=1.0, help="multiplier for the synchronised burst (1.0 = off)")
-    load.add_argument("--burst-period", type=float, default=60.0, help="seconds between synchronised bursts")
-    load.add_argument("--burst-len", type=float, default=2.0, help="seconds each synchronised burst lasts")
+    if rates:
+        load.add_argument("--qps-burst", type=float, default=1.0, help="multiplier for the synchronised burst (1.0 = off)")
+        load.add_argument("--burst-period", type=float, default=60.0, help="seconds between synchronised bursts")
+        load.add_argument("--burst-len", type=float, default=2.0, help="seconds each synchronised burst lasts")
 
-    evidence = parser.add_argument_group("evidence")
-    evidence.add_argument("--record-log", nargs="?", const="auto", default=None, help="write raw per-query records to this path")
-    evidence.add_argument("--record-format", choices=("jsonl", "csv"), default="jsonl")
-    evidence.add_argument("--record-sample", type=float, default=1.0, help="keep this fraction of records (default: 1.0)")
-    evidence.add_argument("--no-record-log", action="store_true", help="force the record log off even if configured")
-    evidence.add_argument(
-        "--nsid",
-        action="store_true",
-        help="ask the target which server instance answered each query (EDNS NSID); shown on the dashboard",
-    )
+    if evidence:
+        proof = parser.add_argument_group("evidence")
+        proof.add_argument("--record-log", nargs="?", const="auto", default=None, help="write raw per-query records to this path")
+        proof.add_argument("--record-format", choices=("jsonl", "csv"), default="jsonl")
+        proof.add_argument("--record-sample", type=float, default=1.0, help="keep this fraction of records (default: 1.0)")
+        proof.add_argument("--no-record-log", action="store_true", help="force the record log off even if configured")
+        proof.add_argument(
+            "--nsid",
+            action="store_true",
+            help="ask the target which server instance answered each query (EDNS NSID); shown on the dashboard",
+        )
 
-    dashboard = parser.add_argument_group("dashboard")
-    dashboard.add_argument("--listen-host", default=DEFAULT_HOST, help=f"dashboard bind address (default: {DEFAULT_HOST})")
-    dashboard.add_argument("--dashboard-port", type=int, default=DEFAULT_PORT, help=f"dashboard port (default: {DEFAULT_PORT})")
-    dashboard.add_argument("--open-dashboard", action="store_true", help="open the dashboard in a browser")
-    dashboard.add_argument("--no-dashboard", action="store_true", help="run headless and print the summary only")
-    dashboard.add_argument(
-        "--allow-remote-dashboard",
-        action="store_true",
-        help="allow --listen-host to be a non-loopback address. The dashboard can start load tests and has no login.",
-    )
+    if dashboard:
+        page = parser.add_argument_group("dashboard")
+        page.add_argument("--listen-host", default=DEFAULT_HOST, help=f"dashboard bind address (default: {DEFAULT_HOST})")
+        page.add_argument("--dashboard-port", type=int, default=DEFAULT_PORT, help=f"dashboard port (default: {DEFAULT_PORT})")
+        page.add_argument("--open-dashboard", action="store_true", help="open the dashboard in a browser")
+        page.add_argument("--no-dashboard", action="store_true", help="run headless and print the summary only")
+        page.add_argument(
+            "--allow-remote-dashboard",
+            action="store_true",
+            help="allow --listen-host to be a non-loopback address. The dashboard can start load tests and has no login.",
+        )
 
     rehearsal = parser.add_argument_group("rehearsal")
     rehearsal.add_argument("--mock", action="store_true", help="start the built-in mock appliance and target it")
@@ -1517,6 +1563,7 @@ def main(argv: list[str] | None = None) -> int:
         "bench": cmd_bench,
         "doctor": cmd_doctor,
         "checks": cmd_checks,
+        "capacity": cmd_capacity,
     }[args.command]
 
     try:
@@ -1567,6 +1614,111 @@ def cmd_checks(args: argparse.Namespace) -> int:
     print()
     print(f"  {counts}.  Run with --json for the evidence behind each result.")
     return 0
+
+
+def cmd_capacity(args: argparse.Namespace) -> int:
+    """Find the highest rate the target sustains, step by step, headless.
+
+    Prints each step as it finishes and the answer at the end; ``--json`` prints
+    the whole search, and ``--require`` turns it into a pass/fail exit code.
+    """
+    from dataclasses import asdict, replace
+
+    from .capacity import CapacityPlan, Slo, search
+
+    plan = CapacityPlan(
+        start_qps=args.start_qps,
+        max_qps=args.max_qps,
+        growth=args.growth,
+        step_s=args.step_seconds,
+        refine=args.refine,
+    )
+    slo = Slo(loss_pct=args.slo_loss, servfail_pct=args.slo_servfail, p95_ms=args.slo_p95)
+    plan.validate()
+    slo.validate()
+    _available, chosen = resolve_targets(args)
+    if len(chosen) > 1:
+        raise ValueError("a capacity search runs against one target at a time")
+    config = build_config(args, chosen[0])
+    # The guard judges the highest rate the search may reach, not the first.
+    config.target_qps = plan.max_qps
+    catalogue = _load_lists(args)
+    mock = _setup_mock(args, catalogue, config)
+    quiet = bool(getattr(args, "json", False))
+    if not quiet:
+        ramp = plan.ramp()
+        print(f"DNS Load Forge {__version__} -- capacity search against {config.target_name or config.target}")
+        print(f"  target          {config.target}")
+        print(f"  steps           {len(ramp)} from {ramp[0]:,} to {ramp[-1]:,} qps (x{plan.growth:g} each, "
+              f"{plan.step_s:g}s), then up to {plan.refine} to narrow it down")
+        print(f"  limits          loss <= {slo.loss_pct:g}%, SERVFAIL <= {slo.servfail_pct:g}% of answers, "
+              f"p95 <= {slo.p95_ms:g} ms")
+        print(f"  longest         about {plan.estimate_s() / 60:.0f} min")
+
+    problems = preflight(config, catalogue, args, chosen)
+    if problems:
+        print()
+        print("Cannot start:")
+        for problem in problems:
+            print(f"  - {problem}")
+        if mock is not None:
+            mock.stop()
+        return 2
+
+    def run_step(rate: float) -> tuple[dict, float]:
+        step = replace(config, target_qps=float(rate), duration_s=float(plan.step_s))
+        stats = StatsAggregator()
+        stats.set_run(
+            server=step.target,
+            transport=step.transport,
+            target_name=step.target_name,
+            mode=step.mode,
+            personas=step.personas,
+            source_ips=len(step.source_ips) or 1,
+            target_qps=step.target_qps,
+            seed=step.seed,
+        )
+        results = run_threaded(step, catalogue, stats=stats, threads=step.threads)
+        return stats.snapshot(), sum(r.achieved_qps for r in results)
+
+    def on_start(index: int, phase: str, rate: float) -> None:
+        if not quiet:
+            print(f"  step {index:>2}  {phase:6}  {rate:>9,.0f} qps", end="", flush=True)
+
+    def on_step(step) -> None:
+        if not quiet:
+            detail = "; ".join(step.reasons) or f"loss {step.loss_pct:.1f}%"
+            # No answer, no latency: a p95 of 0 there would read as a fast target.
+            p95 = f"{step.p95_ms:>6g} ms" if step.received else "     - ms"
+            print(f"  {step.status.upper():9}  p95 {p95}  {detail}")
+
+    if not quiet:
+        print()
+    try:
+        result = search(plan, slo, run_step, on_step=on_step, on_start=on_start)
+    except KeyboardInterrupt:
+        print("\n  interrupted")
+        return 130
+    finally:
+        if mock is not None:
+            mock.stop()
+
+    met = None
+    if args.require is not None:
+        met = result.sustained_qps is not None and result.sustained_qps >= args.require
+    if quiet:
+        report = {"target": config.target_name or config.target, "endpoint": config.target}
+        report.update(plan=asdict(plan), slo=asdict(slo), **result.as_dict())
+        if met is not None:
+            report["required_qps"] = args.require
+            report["requirement_met"] = met
+        print(json.dumps(report, indent=2))
+    else:
+        print()
+        print(f"  {result.summary}")
+        if met is not None:
+            print(f"  required {args.require:,.0f} qps: {'met' if met else 'NOT met'}")
+    return 1 if met is False else 0
 
 
 def cmd_serve(args: argparse.Namespace) -> int:

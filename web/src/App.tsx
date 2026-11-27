@@ -8,6 +8,7 @@ import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { useRoute } from "@/hooks/use-route"
 import { DEMO } from "@/lib/api"
+import { CapacityPage } from "@/pages/capacity"
 import { ChecksPage } from "@/pages/checks"
 import { ComparePage } from "@/pages/compare"
 import { ListsPage } from "@/pages/lists"
@@ -32,6 +33,8 @@ export function App() {
             <main className="@container/main mx-auto flex w-full max-w-[1800px] min-w-0 flex-1 flex-col p-4 lg:p-6">
               {route === "compare" ? (
                 <ComparePage />
+              ) : route === "capacity" ? (
+                <CapacityPage />
               ) : route === "checks" ? (
                 <ChecksPage />
               ) : route === "lists" ? (

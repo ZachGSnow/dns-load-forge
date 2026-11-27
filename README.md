@@ -166,6 +166,48 @@ network, the targets and the day's threat feeds.)*
   comparison**. Every finished run, comparison or not, lands in the table, and **Export
   JSON** saves it.
 
+## Finding the limit
+
+A run at one rate tells you whether the target copes with it. `capacity` tells you how
+much it can take: it raises the rate step by step, each step a run of the same office
+traffic, until a step breaks a limit you set, then narrows it down between the last step
+that passed and the first that failed.
+
+```bash
+python -m dnsloadforge capacity --server 10.0.0.10 --max-qps 30000
+python -m dnsloadforge capacity --server 10.0.0.10 --slo-p95 50 --require 8000   # exit 1 below 8,000 qps
+```
+
+```
+  step  6  ramp        1,500 qps  PASS       p95     20 ms  loss 0.0%
+  step  7  ramp        2,300 qps  PASS       p95     30 ms  loss 0.1%
+  step  8  ramp        3,400 qps  FAIL       p95    150 ms  loss 2.4% (limit 1%); p95 150 ms (limit 100 ms)
+  step  9  refine      2,800 qps  PASS       p95     50 ms  loss 0.3%
+  step 10  refine      3,100 qps  FAIL       p95    150 ms  p95 150 ms (limit 100 ms)
+
+  Sustains 2,800 qps (p95 50 ms, loss 0.3%). At 3,100 qps: p95 150 ms (limit 100 ms).
+```
+
+*(the layout is real; the numbers are placeholders)*
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--start-qps`, `--max-qps` | 200, 20000 | the first rate, and the highest the search will try |
+| `--growth` | 1.5 | each ramp step is this many times the last |
+| `--step-seconds` | 20 | how long each step runs |
+| `--refine` | 2 | steps that bisect between the last pass and the first failure |
+| `--slo-loss`, `--slo-servfail` | 1 | most timeouts and errors (% of queries), and most SERVFAIL (% of answers) |
+| `--slo-p95` | 100 | highest p95 latency, in ms |
+| `--require QPS` | | exit 1 unless the target sustains at least this rate |
+
+A step also breaks when more than 0.5% of answers carry Extended DNS Error 31 (Rate
+Limited) or 32 (Over Quota): the target saying itself that it is shedding load. Before any
+of that, the search checks that **this machine** reached the rate. A step it could not send
+is no evidence about the target, so the search stops there and says so (`--threads`, or a
+faster machine) rather than reporting its own limit as the target's. The Capacity page in
+the dashboard runs the same search, shows each step live, and charts p95 and loss by rate.
+The public-resolver guard applies to the highest rate a search may reach.
+
 ## Encrypted DNS and TCP
 
 A filter has to hold on every road a client takes to it. Browsers resolve over DNS over
@@ -242,7 +284,7 @@ expected answers were checked against live resolvers on 2026-11-26.
 
 ## The dashboard
 
-Near-real-time, updated once a second over Server-Sent Events, with three pages:
+Near-real-time, updated once a second over Server-Sent Events, with five pages:
 
 * **Live run** - the run in progress.
   * **Verdict** - the headline answer, colour-coded, with the reason.
@@ -262,6 +304,8 @@ Near-real-time, updated once a second over Server-Sent Events, with three pages:
   * **False positives / false negatives** - the money tables.
   * **Top domains / top clients**, sortable.
 * **Compare** - tick targets, run them on identical traffic, and read the table and charts.
+* **Capacity** - the capacity search above: each step live, the answer, and p95 and loss
+  charted by rate.
 * **Checks** - the deployment checks above, grouped, with the evidence behind each result.
 * **Domain lists** - what mix was actually loaded, and a **Sources** table to refresh each
   list, refresh them all, or switch one off. List changes happen between runs only, because
@@ -275,8 +319,9 @@ page with `?demo=1` to see it with generated data and no backend.
 
 `GET /api/stats` returns the same snapshot as JSON, `GET /api/stream` is the SSE feed,
 and `POST /api/control` starts and stops runs (`{"action":"start","target":"Quad9"}`,
-`{"action":"compare","targets":[...],"duration_s":60}`, `{"action":"stop"}`). `GET
-/api/history` returns the finished runs, and `/api/sources` with `POST
+`{"action":"compare","targets":[...],"duration_s":60}`,
+`{"action":"capacity","target":"...","max_qps":20000}`, `{"action":"stop"}`). `GET
+/api/history` returns the finished runs, `GET /api/capacity` the capacity search, and `/api/sources` with `POST
 /api/sources/refresh` and `/api/sources/enabled` manage the domain lists. The per-query
 evidence is downloadable as CSV, JSONL or JSON.
 
@@ -461,7 +506,7 @@ full 10,000 qps soak.
 python -m unittest discover -s tests -t tests -v
 ```
 
-369 tests, no network access required. The ones that matter most are the seven
+390 tests, no network access required. The ones that matter most are the seven
 end-to-end verdict scenarios in `tests/test_engine.py`, which drive real UDP at a real
 mock appliance and assert that an honest filter is reported as `filtering` **while** a
 passthrough, overblocking and lossy filter each produce a different, correct verdict.
@@ -499,6 +544,7 @@ command functions.
 | `bench` | measure what this machine can generate |
 | `doctor` | check readiness: Python, elevation, source address, lists, target reachability |
 | `checks` | deployment checks: identity, bypass, encrypted-DNS canaries, DNSSEC, SafeSearch, vendor test names |
+| `capacity` | find the highest rate the target sustains within the limits you set |
 
 Running with no command defaults to `run`, so `python -m dnsloadforge --server 1.2.3.4`
 does the obvious thing.

@@ -316,6 +316,72 @@ export interface ControlResponse {
   error?: string
 }
 
+/** pass, fail, generator (this machine could not send the rate), small (too
+ *  few queries to judge), stopped (cut short). */
+export type CapacityStatus = "pass" | "fail" | "generator" | "small" | "stopped"
+
+export interface CapacityStep {
+  index: number
+  phase?: "ramp" | "refine"
+  target_qps: number
+  achieved_qps?: number
+  offered_qps?: number
+  sent?: number
+  received?: number
+  completed?: number
+  loss_pct?: number
+  servfail_pct?: number
+  rate_limited_pct?: number
+  dropped_pct?: number
+  p50_ms?: number
+  p95_ms?: number
+  p99_ms?: number
+  status?: CapacityStatus
+  reasons?: string[]
+}
+
+export interface CapacityPlan {
+  start_qps?: number
+  max_qps?: number
+  growth?: number
+  step_s?: number
+  refine?: number
+}
+
+export interface CapacitySlo {
+  loss_pct?: number
+  servfail_pct?: number
+  p95_ms?: number
+}
+
+export interface CapacityResult {
+  sustained_qps?: number | null
+  knee_qps?: number | null
+  /** target (a rate failed), max (every rate passed), start (the first rate
+   *  failed), generator (this machine could not go higher), stopped */
+  limit?: "target" | "max" | "start" | "generator" | "stopped"
+  summary?: string
+}
+
+export interface CapacityPayload {
+  state?: "idle" | "running" | "done" | "stopped" | "error"
+  target?: Target
+  plan?: CapacityPlan
+  slo?: CapacitySlo
+  estimate_s?: number
+  started_at?: number
+  finished_at?: number
+  current?: {
+    index: number
+    phase?: string
+    target_qps: number
+    started_at?: number
+  } | null
+  steps?: CapacityStep[]
+  result?: CapacityResult | null
+  error?: string
+}
+
 export type CheckStatus = "pass" | "warn" | "fail" | "error" | "info" | "skip"
 
 /** One query a check made, and what came back. */
