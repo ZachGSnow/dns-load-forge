@@ -209,15 +209,15 @@ def _encode_options(options: Sequence[tuple[int, bytes]]) -> bytes:
     return b"".join(struct.pack("!HH", code, len(data)) + bytes(data) for code, data in options)
 
 
-def txt_text(rdata: bytes) -> str:
-    """A TXT record's character-strings, joined (RFC 1035 3.3.14)."""
+def txt_parts(rdata: bytes) -> list[str]:
+    """A TXT record's character-strings (RFC 1035 3.3.14)."""
     parts: list[str] = []
     pos = 0
     while pos < len(rdata):
         length = rdata[pos]
         parts.append(rdata[pos + 1 : pos + 1 + length].decode("utf-8", "replace"))
         pos += 1 + length
-    return "".join(parts)
+    return parts
 
 
 def ede_option(code: int, text: str = "") -> tuple[int, bytes]:
@@ -343,8 +343,14 @@ class DNSMessage:
 
     @property
     def txt(self) -> list[str]:
-        """Every TXT string in the answer section, each record's strings joined."""
-        return [txt_text(a.rdata) for a in self.answers if a.rtype == QTYPES["TXT"]]
+        """Every TXT record in the answer section, each record's strings joined."""
+        return ["".join(parts) for parts in self.txt_records]
+
+    @property
+    def txt_records(self) -> list[list[str]]:
+        """Every TXT record as its separate strings: identity services answer with
+        key/value pairs such as ``"ns" "192.0.2.53"``."""
+        return [txt_parts(a.rdata) for a in self.answers if a.rtype == QTYPES["TXT"]]
 
     @property
     def answer_ips(self) -> list[str]:
