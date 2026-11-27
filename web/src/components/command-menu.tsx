@@ -1,5 +1,6 @@
 import {
   DownloadIcon,
+  FileTextIcon,
   PaletteIcon,
   PlayIcon,
   SearchIcon,
@@ -103,6 +104,17 @@ export function CommandMenu({
           </CommandGroup>
           {!DEMO ? (
             <>
+              <CommandSeparator />
+              <CommandGroup heading="Report">
+                <CommandItem
+                  onSelect={act(() => {
+                    window.open(DOWNLOADS.report, "_blank", "noopener")
+                  })}
+                >
+                  <FileTextIcon />
+                  Open the report (prints to PDF)
+                </CommandItem>
+              </CommandGroup>
               <CommandSeparator />
               <CommandGroup heading="Export the per-query evidence">
                 {(["csv", "jsonl", "json"] as const).map((format) => (

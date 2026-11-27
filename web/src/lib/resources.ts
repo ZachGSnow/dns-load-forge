@@ -112,6 +112,14 @@ export async function setSourceEnabled(
   )
 }
 
+export async function clearHistory(): Promise<ActionResult> {
+  if (DEMO) return DEMO_RESULT
+  return describe(
+    "clear",
+    await postJSON<ControlResponse>("/api/history/clear", {})
+  )
+}
+
 export async function startCapacity(
   options: CapacityPlan & { target?: string; slo: CapacitySlo }
 ): Promise<ActionResult> {
