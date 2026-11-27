@@ -202,6 +202,24 @@ class TestSinkholeSet(unittest.TestCase):
         self.assertNotIn("2001:4860::1", sinks)
         self.assertIn("2001:db8::1", sinks)
 
+    def test_an_ipv4_mapped_aaaa_answer_matches_its_ipv4_block_page(self) -> None:
+        """Measured live on 2026-11-26: OpenDNS FamilyShield answers AAAA for a name
+        it blocks with ::ffff:146.112.61.106, which this decoder spells
+        ::ffff:9270:3d6a on Python 3.12.  It never matched the 146.112.61.0/24 preset,
+        so every AAAA query to a blocked name scored as a leak."""
+        network = SinkholeSet([], ["146.112.61.0/24"])
+        self.assertIn("::ffff:9270:3d6a", network)
+        self.assertIn("::ffff:146.112.61.106", network)
+        self.assertNotIn("::ffff:808:808", network, "a mapped address outside the network is not a block")
+        self.assertIn("::ffff:9270:3d6a", SinkholeSet(["146.112.61.106"], []))
+
+    def test_the_familyshield_preset_scores_its_aaaa_block_page_as_a_block(self) -> None:
+        preset = find_target("OpenDNS FamilyShield", list(BUILTIN_TARGETS))
+        config = preset.apply(RunConfig())
+        sinks = SinkholeSet(config.sinkhole_ips, config.sinkhole_cidrs)
+        outcome, _ = classify(Category.BLOCK_ADULT.value, "NOERROR", ["::ffff:9270:3d6a"], sinks)
+        self.assertEqual(outcome, Outcome.BLOCKED.value)
+
 
 class TestScoringRules(unittest.TestCase):
     SINK = SinkholeSet(["0.0.0.0"], ["146.112.61.0/24"])
