@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "_comment": "Domain list sources for DNS Load Forge. Data-driven so a dead or retired list is a one-line edit instead of a code change. 'format' selects the parser: hosts (0.0.0.0/127.0.0.1 domain), plain (one domain per line, may include ABP ||domain^ lines), rank_csv (popularity list, e.g. 'rank,domain'; a header row is detected). 'tier' is documentation for operators: primary lists are the ones the default mixture leans on, secondary lists add volume. 'ranked' marks a list whose order encodes popularity, which drives sampling weights and which end of the list survives --max-per-category. Verified reachable 2026-10-12.",
+  "_comment": "Domain list sources for DNS Load Forge. Data-driven so a dead or retired list is a one-line edit instead of a code change. 'format' selects the parser: hosts (0.0.0.0/127.0.0.1 domain), plain (one domain per line, may include ABP ||domain^ lines), rank_csv (popularity list, e.g. 'rank,domain'; a header row is detected). 'tier' is documentation for operators: primary lists are the ones the default mixture leans on, secondary lists add volume. 'ranked' marks a list whose order encodes popularity, which drives sampling weights and which end of the list survives --max-per-category. Verified reachable 2026-11-26.",
   "_why_blocklistproject": "A domain is only ever one category, so when two sources disagree the highest-precedence category wins and the other loses the domain. That makes SUPERSET lists actively harmful here: StevenBlack's 'alternates/*' files are the base list plus extensions, so using one for adult content silently reclassified every ad domain (72,526 of them) as adult and emptied block_ads entirely. The Block List Project publishes single-topic lists, so each category stays its own.",
   "sources": [
     {
@@ -24,11 +24,11 @@
     {
       "slug": "urlhaus",
       "category": "block_malware",
-      "url": "https://urlhaus.abuse.ch/downloads/hostfile/",
+      "url": "https://malware-filter.gitlab.io/malware-filter/urlhaus-filter-hosts.txt",
       "format": "hosts",
       "tier": "primary",
       "ranked": false,
-      "description": "abuse.ch URLhaus malware distribution hosts. Fresh, high-confidence, and changes daily -- the best signal that the appliance is actually pulling threat intelligence."
+      "description": "abuse.ch URLhaus malware distribution hosts, via the malware-filter project's 12-hourly mirror (abuse.ch's own exports need an Auth-Key since October 2026). Fresh, high-confidence, and changes daily -- the best signal that the appliance is actually pulling threat intelligence."
     },
     {
       "slug": "blocklistproject-malware",
