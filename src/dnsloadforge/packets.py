@@ -73,13 +73,16 @@ _SVC_IPV6HINT = 6
 
 #: Extended DNS Error codes that mean a *policy* chose this answer, rather than a
 #: resolution failure: 4 Forged Answer, 15 Blocked, 16 Censored, 17 Filtered,
-#: 18 Prohibited.  Filters do not agree on which one a block gets (observed live:
-#: Cloudflare 1.1.1.2 sends 16, Quad9 and AdGuard 17, DNS4EU 15), so all five count.
-EDE_POLICY_CODES: frozenset[int] = frozenset({4, 15, 16, 17, 18})
+#: 18 Prohibited, and 35 Blocked by Upstream DNS Server, which a forwarder sends
+#: when the block was made upstream of it.  Filters do not agree on which one a
+#: block gets (observed live: Cloudflare 1.1.1.2 sends 16, Quad9 and AdGuard 17,
+#: DNS4EU 15), so all of them count.
+EDE_POLICY_CODES: frozenset[int] = frozenset({4, 15, 16, 17, 18, 35})
 
-#: Names from the RFC 8914 registry, for reports.  Anything else shows as its number.
+#: Names as the IANA registry gives them (RFC 8914 and later assignments; the
+#: registry as updated on 2026-11-18), for reports.
 EDE_NAMES: dict[int, str] = {
-    0: "Other",
+    0: "Other Error",
     1: "Unsupported DNSKEY Algorithm",
     2: "Unsupported DS Digest Type",
     3: "Stale Answer",
@@ -98,17 +101,33 @@ EDE_NAMES: dict[int, str] = {
     16: "Censored",
     17: "Filtered",
     18: "Prohibited",
-    19: "Stale NXDOMAIN Answer",
+    19: "Stale NXDomain Answer",
     20: "Not Authoritative",
     21: "Not Supported",
     22: "No Reachable Authority",
     23: "Network Error",
     24: "Invalid Data",
+    25: "Signature Expired before Valid",
+    26: "Too Early",
+    27: "Unsupported NSEC3 Iterations Value",
+    28: "Unable to conform to policy",
+    29: "Synthesized",
+    30: "Invalid Query Type",
+    31: "Rate Limited",
+    32: "Over Quota",
+    33: "Negative Trust Anchor",
+    34: "New Delegation Only",
+    35: "Blocked by Upstream DNS Server",
 }
+
+#: Codes from here up are for private use (RFC 8914 section 5.2).
+_EDE_PRIVATE = 49152
 
 
 def ede_label(code: int) -> str:
-    return f"{code} {EDE_NAMES.get(code, 'EDE')}"
+    """``"17 Filtered"``: the code and its registered name."""
+    name = EDE_NAMES.get(code) or ("Private Use" if code >= _EDE_PRIVATE else "Unassigned")
+    return f"{code} {name}"
 
 _MAX_NAME_LEN = 255
 _MAX_LABEL_LEN = 63
