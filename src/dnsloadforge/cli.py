@@ -1397,7 +1397,7 @@ def cmd_checks(args: argparse.Namespace) -> int:
     quiet = getattr(args, "json", False)
     if not quiet:
         print(f"DNS Load Forge {__version__} -- deployment checks against {target.name} ({target.server}:{target.port})")
-    results = run_checks(ctx, only=args.only, progress=None if quiet else lambda check: None)
+    results = run_checks(ctx, only=args.only)
     summary = summarise(results)
     if quiet:
         print(json.dumps({"target": target.as_dict(), "summary": summary, "checks": [r.as_dict() for r in results]}, indent=2))
