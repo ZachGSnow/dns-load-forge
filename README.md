@@ -27,15 +27,20 @@ a filter "blocks threats" and would like to see it do it.
 * **A live dashboard** built with Tailwind CSS and shadcn/ui: verdict, live charts, findings
   tables, side-by-side comparisons and domain lists you can refresh from the page, in light
   or dark and five palettes.
-* **Dependency-free.** Python 3.10+ standard library only; no capture driver, no privileges,
-  runs from a USB stick on an isolated segment. The dashboard is one self-contained page
-  that makes no request beyond the tool itself.
+* **From the first check to the sign-off.** Deployment checks before the load (who answers,
+  whether DNS can go around the filter), a capacity search for the highest rate it sustains,
+  pass/fail assertions for CI, and a printable report at the end.
+* **Dependency-free.** Python 3.10+ standard library only, or a Windows executable; no
+  capture driver, no privileges, runs from a USB stick on an isolated segment. The dashboard
+  is one self-contained page that makes no request beyond the tool itself.
 
 ```
 python -m dnsloadforge targets                       # what you can test against
 python -m dnsloadforge --mock                        # rehearse with no real target
+python -m dnsloadforge checks --server 10.0.0.10     # how the filter is deployed
 python -m dnsloadforge --target "Quad9" --target "OpenDNS FamilyShield" --qps 100 --duration 120
 python -m dnsloadforge --server 10.0.0.10 --qps 2000 --duration 900     # your own appliance
+python -m dnsloadforge capacity --server 10.0.0.10   # the highest rate it sustains
 ```
 
 > **Responsible use.** This sends real DNS traffic, including lookups of malware and phishing
@@ -218,6 +223,9 @@ is no evidence about the target, so the search stops there and says so (`--threa
 faster machine) rather than reporting its own limit as the target's. The Capacity page in
 the dashboard runs the same search, shows each step live, and charts p95 and loss by rate.
 The public-resolver guard applies to the highest rate a search may reach.
+
+![The Capacity page after a search against the built-in mock appliance: it sustains 3,800 qps and breaks at 4,200 qps on p95 latency, with p95 and loss charted by rate and every step listed with its result](docs/capacity.png)
+*A search against the built-in mock appliance, whose limit is the machine it runs on.*
 
 ## Encrypted DNS and TCP
 
@@ -419,7 +427,7 @@ Here is the first case, produced with `--mock --mock-overblock`: the mock applia
 wrongly blocks the enterprise list, the verdict turns `DEGRADED`, false-positive bars
 appear under the traffic chart, and the table names every broken domain.
 
-![A DEGRADED verdict: 12,577 false blocks, false-positive bars under the traffic chart, the results by category, and a false-positive table listing blocked enterprise domains such as webex.com and ocsp.digicert.com](docs/false-positives.png)
+![A DEGRADED verdict: 8,485 false blocks, false-positive bars under the traffic chart, the results by category, how the target signalled its blocks, and a false-positive table listing blocked enterprise domains such as webex.com and ocsp.digicert.com](docs/false-positives.png)
 
 ## How a block is recognised
 
