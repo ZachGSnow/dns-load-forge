@@ -129,6 +129,26 @@ const DEFAULT_FORM: Form = {
   p95: "100",
 }
 
+/** The settings of the search the server last ran, as form values. */
+function formFrom(data: CapacityPayload): Form {
+  const plan = data.plan ?? {}
+  const slo = data.slo ?? {}
+  const text = (value: number | undefined, fallback: string) =>
+    typeof value === "number" && Number.isFinite(value)
+      ? String(value)
+      : fallback
+  return {
+    start: text(plan.start_qps, DEFAULT_FORM.start),
+    max: text(plan.max_qps, DEFAULT_FORM.max),
+    step: text(plan.step_s, DEFAULT_FORM.step),
+    growth: text(plan.growth, DEFAULT_FORM.growth),
+    refine: text(plan.refine, DEFAULT_FORM.refine),
+    loss: text(slo.loss_pct, DEFAULT_FORM.loss),
+    servfail: text(slo.servfail_pct, DEFAULT_FORM.servfail),
+    p95: text(slo.p95_ms, DEFAULT_FORM.p95),
+  }
+}
+
 function StatusBadge({ status }: { status?: CapacityStatus }) {
   const value = status ?? "small"
   return (
@@ -391,6 +411,15 @@ export function CapacityPage() {
   const [target, setTarget] = React.useState("")
   const [form, setForm] = React.useState<Form>(DEFAULT_FORM)
   const now = useNow(1000)
+
+  // Start from the last search's settings, so the form and the result under it
+  // describe the same search after a reload, until they are changed.
+  const [seeded, setSeeded] = React.useState(false)
+  if (!seeded && data?.plan) {
+    setSeeded(true)
+    setForm(formFrom(data))
+    if (data.target?.name) setTarget(data.target.name)
+  }
   const chosen = target || run.target
   const selected = run.targets.find((t) => t.name === chosen)
 
