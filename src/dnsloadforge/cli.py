@@ -1664,7 +1664,85 @@ def cmd_mock(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+#: What the console says when the Windows executable is double-clicked.
+_LAUNCH_BANNER = """\
+DNS Load Forge {version}
+
+The dashboard opens in your browser at {url}
+It starts with a simulated filtering appliance, so everything can be tried
+safely. Keep this window open while you use it; close it to stop.
+
+The first start downloads the public domain lists (about 40 MB) before the
+dashboard opens, which can take a few minutes; after that it starts in seconds.
+
+To test your own filter, describe it in targets.json in this folder (copy
+targets.example.json) and start again, or run from a terminal here:
+    .\\dnsloadforge.exe --server 10.0.0.10
+    .\\dnsloadforge.exe --help
+"""
+
+
+def _launched_by_double_click() -> bool:
+    """The Windows executable started from Explorer rather than a terminal: its
+    console was made for it, so no other process is attached to it."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return False
+    try:
+        import ctypes
+
+        attached = (ctypes.c_uint32 * 2)()
+        return ctypes.windll.kernel32.GetConsoleProcessList(attached, 2) == 1  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        return False
+
+
+def _dashboard_running(url: str) -> bool:
+    import urllib.request
+
+    # No proxy: this is a question about this machine.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url + "api/health", timeout=1.0) as response:
+            return response.status == 200
+    except OSError:
+        return False
+
+
+def _launch_dashboard() -> int:
+    """Double-clicked: serve the dashboard on the built-in mock and open it.  A
+    second double-click opens the dashboard already running instead of failing
+    on the port, and an error waits for Enter, because the window closes with the
+    process and would take the message with it."""
+    url = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}/"
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.SetConsoleTitleW("DNS Load Forge")  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        pass
+    if _dashboard_running(url):
+        print(f"DNS Load Forge is already running: opening {url}")
+        webbrowser.open(url)
+        time.sleep(2)
+        return 0
+    print(_LAUNCH_BANNER.format(version=__version__, url=url))
+    try:
+        code = main(["serve", "--mock", "--open-dashboard"])
+    except Exception as exc:  # noqa: BLE001 - shown, then the window waits
+        print(f"\nerror: {type(exc).__name__}: {exc}")
+        code = 1
+    if code not in (0, 130):
+        try:
+            input("\nPress Enter to close this window.")
+        except (EOFError, KeyboardInterrupt):
+            pass
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
+    if argv is None and not sys.argv[1:] and _launched_by_double_click():
+        return _launch_dashboard()
+
     # Line-buffer stdout.  Python block-buffers when output is redirected to a file
     # or a pipe, so `python -m dnsloadforge ... > run.log` would show nothing at all
     # until the process exits -- which for a run that waits for Ctrl-C looks like a

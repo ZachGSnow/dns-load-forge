@@ -44,3 +44,20 @@ npm run check                            # lint, unit tests, type-check and buil
   every theme's text and status colours for 4.5:1 contrast.
 * `node scripts/screenshots.mjs` (in `web/`) captures the pages from a running server, for
   the README and for checking a change by eye.
+
+## Building the Windows executable
+
+The release workflow builds it on every `v*` tag; to build one yourself on Windows:
+
+```powershell
+python -m pip install pyinstaller==6.22.3
+python -m PyInstaller --noconfirm --clean packaging/dnsloadforge.spec
+python packaging/package.py              # dist/DNS-Load-Forge-<version>-windows-x64.zip
+```
+
+* `packaging/dnsloadforge.spec` is the recipe: one folder, not one file, and no UPX, both
+  because antivirus engines flag the alternatives. The workflow also compiles PyInstaller's
+  bootloader from source rather than using the prebuilt one.
+* The icon is drawn by `python packaging/make_icon.py` from the shapes of the dashboard's
+  favicon; a test fails if the committed `.ico` no longer matches it.
+* A pull request that touches `packaging/` builds and runs the executable in CI.

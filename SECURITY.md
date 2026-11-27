@@ -60,6 +60,13 @@ Please report vulnerabilities privately through GitHub's
 rather than a public issue. You can expect an acknowledgement within 7 days. Fixes ship as
 a patch release. Only the latest release is supported.
 
+## Releases
+
+The Windows executable is built by GitHub Actions from the tagged source and published
+with a `SHA256SUMS` file and a build-provenance attestation (`gh attestation verify
+<zip> --repo ZachGSnow/dns-load-forge`). It is not code-signed, so check those before
+running it.
+
 ## Secrets
 
 This repository contains no credentials. Your own targets live in a gitignored
