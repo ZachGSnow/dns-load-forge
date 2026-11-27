@@ -263,6 +263,9 @@ class StatsAggregator:
 
         self._series: deque[SeriesWindow] = deque(maxlen=series_seconds)
         self._current: SeriesWindow | None = None
+        #: The second of the run's first bucket.  It only covers the part of that
+        #: second after the run began, so it is left out of every rate.
+        self._first_t: int | None = None
 
         self.sent = 0
         self.received = 0
@@ -335,6 +338,7 @@ class StatsAggregator:
         with self._lock:
             self._series.clear()
             self._current = None
+            self._first_t = None
             self.sent = self.received = self.timeouts = self.errors = 0
             self.dropped = 0
             self.bytes_sent = self.bytes_received = self.in_flight = 0
@@ -357,6 +361,8 @@ class StatsAggregator:
         current_second = int(now)
         if self._current is None:
             self._current = SeriesWindow(t=current_second)
+            if self._first_t is None:
+                self._first_t = current_second
             return self._current
         if current_second == self._current.t:
             return self._current
@@ -566,12 +572,25 @@ class StatsAggregator:
                 latency_max = bucket.latency_max
 
         p95_window = percentile_from_histogram(hist, LATENCY_BUCKETS_MS, 95.0)
-        last = series[-1] if series else None
         recv_recent = sum(b.recv for b in recent)
-        sent_recent = sum(b.sent for b in recent) or 1
         # Errors are a share of everything sent, not of what came back: a query
         # that timed out is exactly the failure this number exists to expose.
         error_recent = sum(b.timeout + b.error for b in recent)
+
+        # Per-second *rates* come from seconds that have finished.  The current
+        # second's bucket is still filling -- 300 ms into it, it holds 30% of a
+        # second's traffic -- and the run's first bucket only covers the part of its
+        # second after the run began.  Read from either, a healthy generator showed
+        # at a fraction of its real rate, by an amount that depended only on when the
+        # dashboard happened to look.  Shares such as window_error_pct are ratios,
+        # which a partial second does not distort, so they keep the freshest buckets.
+        finished = series[:-1] if self._current is not None else series
+        settled = [b for b in finished if b.t != self._first_t]
+        rate_window = settled[-5:]
+        last = settled[-1] if settled else None
+
+        def per_second(total: int) -> float:
+            return round(total / len(rate_window), 2) if rate_window else 0.0
 
         run = dict(self._run)
         elapsed = self._frozen_elapsed if self._frozen_elapsed is not None else self.elapsed_locked()
@@ -657,9 +676,9 @@ class StatsAggregator:
             "rates": {
                 "qps_sent": float(last.sent) if last else 0.0,
                 "qps_recv": float(last.recv) if last else 0.0,
-                "qps_sent_avg": round(sent_recent / len(recent), 2) if recent else 0.0,
-                "qps_recv_avg": round(recv_recent / len(recent), 2) if recent else 0.0,
-                "qps_completed_avg": round((recv_recent + error_recent) / len(recent), 2) if recent else 0.0,
+                "qps_sent_avg": per_second(sum(b.sent for b in rate_window)),
+                "qps_recv_avg": per_second(sum(b.recv for b in rate_window)),
+                "qps_completed_avg": per_second(sum(b.recv + b.timeout + b.error for b in rate_window)),
                 # Two rates, both bounded by construction.
                 #
                 # ``error_pct`` is the run's loss: failures over queries actually
@@ -839,6 +858,21 @@ class StatsAggregator:
                     f"No categories are expected to be blocked for this target, so this run measures "
                     f"resolver behaviour only: {allowed} queries resolved, {loss_pct:.1f}% loss "
                     f"(p95 {self._p95_locked():.0f}ms)."
+                    + caveat
+                ),
+            }
+
+        if block_sent == 0:
+            # Blocking is expected but nothing block-listed was sent, which is what an
+            # empty or never-fetched block list produces.  "Filtering correctly. 0
+            # block-listed queries were refused" would certify a test that never ran.
+            return {
+                "status": "unknown",
+                "note": (
+                    f"Filtering was not tested: no queries went to block-listed domains, so there was "
+                    f"nothing to block. The block lists are probably empty; fetch them while online "
+                    f"(`python -m dnsloadforge lists --refresh`). {allowed} legitimate queries resolved "
+                    f"with {loss_pct:.1f}% loss (p95 {self._p95_locked():.0f}ms)."
                     + caveat
                 ),
             }

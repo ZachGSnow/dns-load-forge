@@ -199,7 +199,7 @@ anywhere else needs `--allow-remote-dashboard`. Details in [SECURITY.md](SECURIT
 | Verdict | Meaning | What to do |
 |---|---|---|
 | **idle** | no run yet | press Start |
-| **unknown** | fewer than 200 completed queries | run longer; a verdict from a handful of packets is noise |
+| **unknown** | fewer than 200 completed queries, or nothing block-listed was sent | run longer (a verdict from a handful of packets is noise), or fetch the block lists with `lists --refresh` |
 | **filtering** | blocked what it should, allowed what it should, no false positives | nothing |
 | **baseline** | nothing is expected to be blocked for this target (an unfiltered control) | use it as the reference to compare filters against |
 | **passthrough** | answering, but blocking almost nothing | **the policy is not being applied** - check the appliance's client scope, its forwarding rules, and that the clients actually point at it |

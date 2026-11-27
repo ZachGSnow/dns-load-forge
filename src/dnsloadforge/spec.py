@@ -399,7 +399,9 @@ class SinkholeSet:
 #     "bytes_sent": 2000, "bytes_received": 4000,
 #     "unique_clients": 998, "unique_domains": 500
 #   },
-#   "rates": {                       # over the last completed 1s bucket
+#   "rates": {                       # qps_*: the last finished second; *_avg: the
+#                                    # last 5 finished seconds (never the one still
+#                                    # filling, nor the run's partial first second)
 #     "qps_sent": 100.0, "qps_recv": 99.0, "error_pct": 1.0,
 #     "qps_sent_avg": 99.5, "in_flight": 3
 #   },

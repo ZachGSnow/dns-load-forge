@@ -106,7 +106,9 @@ size. Dividing by the office *page* total instead of the rate-weight total is of
 mean burst size (~5x), which is exactly the bug that shipped in the first draft and was
 caught by measuring achieved throughput against the target. `RunResult.achieved_qps`
 divides by the **sending** window (`send_started_at`/`send_ended_at`), not the whole run,
-so the drain at the end does not deflate the number.
+so the drain at the end does not deflate the number. The dashboard's per-second rates
+come only from **finished** seconds: the bucket still filling, and the run's first bucket
+(which starts mid-second), would show a healthy generator at a fraction of its rate.
 
 ### One aggregator, per-shard counters
 
@@ -209,7 +211,10 @@ first:
 8. **baseline** - nothing is expected to be blocked for this target (an unfiltered
    resolver used as a control), so "filtering correctly" would claim something the run
    never tested.
-9. **filtering** - nothing to report.
+9. **unknown / filtering not tested** - blocking is expected but no block-listed query was
+   sent, which is what empty or never-fetched block lists produce. "Filtering correctly, 0
+   block-listed queries were refused" would certify a test that never ran.
+10. **filtering** - nothing to report.
 
 `borderline` traffic never produces a false positive or negative: those categories exist
 because the lists genuinely disagree, so the tool reports what happened without judging.
