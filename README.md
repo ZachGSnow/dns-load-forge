@@ -7,7 +7,7 @@
 [![No dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-![DNS Load Forge dashboard during a run against the built-in mock appliance: FILTERING verdict, throughput and outcome cards, live traffic chart, latency and RCODE breakdown](docs/dashboard.png)
+![DNS Load Forge dashboard during a run against the built-in mock appliance: FILTERING verdict, run settings, cards for throughput, loss, latency, block rate and false blocks, the live traffic chart and query outcomes](docs/dashboard.png)
 *Screenshot from a run against the built-in mock appliance, not a real product.*
 
 DNS Load Forge simulates the DNS behaviour of an office of up to **10,000 workers** and
@@ -228,10 +228,10 @@ another site, and binding it anywhere else needs `--allow-remote-dashboard`. Det
   `SERVFAIL`. This is a capacity or upstream problem, not a policy one.
 
 Here is the first case, produced with `--mock --mock-overblock`: the mock appliance
-wrongly blocks the enterprise list, the verdict turns `DEGRADED`, the false-positive
-line climbs on the traffic chart, and the table names every broken domain.
+wrongly blocks the enterprise list, the verdict turns `DEGRADED`, false-positive bars
+appear under the traffic chart, and the table names every broken domain.
 
-![A DEGRADED verdict: 20,444 false positives, a rising false-positive line, and a false-positive table listing blocked enterprise domains such as webex.com and graph.windows.net](docs/false-positives.png)
+![A DEGRADED verdict: 12,577 false blocks, false-positive bars under the traffic chart, the results by category, and a false-positive table listing blocked enterprise domains such as webex.com and ocsp.digicert.com](docs/false-positives.png)
 
 ## What gets generated
 
@@ -354,7 +354,7 @@ full 10,000 qps soak.
 python -m unittest discover -s tests -t tests -v
 ```
 
-285 tests, no network access required. The ones that matter most are the seven
+288 tests, no network access required. The ones that matter most are the seven
 end-to-end verdict scenarios in `tests/test_engine.py`, which drive real UDP at a real
 mock appliance and assert that an honest filter is reported as `filtering` **while** a
 passthrough, overblocking and lossy filter each produce a different, correct verdict.

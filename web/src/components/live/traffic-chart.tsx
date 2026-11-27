@@ -79,8 +79,10 @@ function tooltip() {
 
 export function TrafficChart({ series }: { series: SeriesPoint[] }) {
   const [windowKey, setWindowKey] = React.useState<keyof typeof WINDOWS>("300")
+  // The newest bucket is the second still filling; drawn, it dips the line and
+  // the legend shows a fraction of the real rate, so only finished seconds are shown.
   const data = React.useMemo(
-    () => series.slice(-WINDOWS[windowKey]),
+    () => series.slice(0, -1).slice(-WINDOWS[windowKey]),
     [series, windowKey]
   )
   const latest = data.length ? data[data.length - 1] : null

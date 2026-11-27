@@ -101,7 +101,8 @@ export const DEFAULT_VERDICT_NOTES: Record<VerdictStatus, string> = {
     "Block-listed domains are resolving - the filter is not applying policy to this traffic.",
   degraded: "Filtering is in place but something is wrong; the note says what.",
   idle: "No run has started yet. Pick a target and press Start.",
-  unknown: "Not enough results yet to judge the target.",
+  unknown:
+    "Not enough results yet to judge the target, or nothing block-listed was sent.",
 }
 
 /** Tone classes per verdict: accent border, tint, text and icon colour. */

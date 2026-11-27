@@ -31,7 +31,7 @@ const HEADLINES: Record<VerdictStatus, string> = {
   baseline: "Baseline",
   passthrough: "Passthrough - policy is not being applied",
   degraded: "Degraded",
-  unknown: "Not enough data yet",
+  unknown: "Not judged yet",
   idle: "Idle",
 }
 

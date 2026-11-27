@@ -67,7 +67,11 @@ export function KpiCards({ snapshot }: { snapshot: Snapshot | null }) {
 
   const targetQps = num(run.target_qps)
   const achieved = num(rates.qps_sent_avg)
-  const ofTarget = targetQps > 0 ? (100 * achieved) / targetQps : 0
+  // Judged on the whole run: bursty arrivals swing a 5-second average by about
+  // 5% either way, which would flicker a healthy generator into a warning.
+  const elapsed = num(run.elapsed_s)
+  const runAverage = elapsed >= 5 ? num(totals.sent) / elapsed : 0
+  const ofTarget = targetQps > 0 ? (100 * runAverage) / targetQps : 0
   const loss = num(rates.error_pct)
   const p95 = num(latency.p95)
   const fp = num(outcomes.false_positive)
@@ -78,13 +82,14 @@ export function KpiCards({ snapshot }: { snapshot: Snapshot | null }) {
       label: "Sent qps",
       value: fmtRate(rates.qps_sent),
       badge:
-        targetQps > 0
+        targetQps > 0 && runAverage > 0
           ? {
               text: `${ofTarget.toFixed(0)}% of target`,
               tone: ofTarget < 90 ? "text-warn" : undefined,
             }
           : undefined,
-      footer: `target ${fmtRate(targetQps)} qps, 5s avg ${fmtRate(achieved)}`,
+      footer: `target ${fmtRate(targetQps)} qps, 5s avg ${fmtRate(achieved)}, run avg ${fmtRate(runAverage)}`,
+      hint: "The badge compares the whole run's average with the target.",
     },
     {
       label: "Received qps",
