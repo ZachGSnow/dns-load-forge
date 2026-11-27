@@ -21,10 +21,13 @@ itself in the browser with no code.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import ipaddress
 import json
 import math
 import os
+import re
 import threading
 import time
 from dataclasses import replace
@@ -34,6 +37,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
 
+from . import __version__
 from .compare import summarise_run
 from .domainlist import (
     DomainCatalogue,
@@ -73,7 +77,70 @@ MAX_OVERRIDE = 1_000_000.0
 
 _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
-_DASHBOARD_PATH = Path(__file__).resolve().parent / "dashboard" / "index.html"
+_DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
+_DASHBOARD_PATH = _DASHBOARD_DIR / "index.html"
+_NOTICES_PATH = _DASHBOARD_DIR / "THIRD_PARTY_NOTICES.txt"
+
+#: The page's inline scripts, as the browser reads them: up to the first ``</script``.
+_INLINE_SCRIPT = re.compile(rb"<script\b[^>]*>(.*?)</script\s*>", re.S | re.I)
+
+
+def dashboard_csp(html: bytes) -> str:
+    """The Content-Security-Policy the dashboard is served with.
+
+    The page is one self-contained file, so the policy can say exactly that: it may
+    talk to this server and nothing else.  Scripts are allowed by the SHA-256 of each
+    inline block rather than by ``'unsafe-inline'``, so even a markup injection could
+    not run anything, and ``frame-ancestors`` stops another site framing the Start
+    button (clickjacking needs no credentials either).  Styles stay inline-allowed
+    because the chart components write their colours into a ``<style>`` element.
+
+    The browser normalises line endings before hashing a script, and a Windows
+    checkout may have turned the file's LF into CRLF, so the hash is taken after the
+    same normalisation.
+    """
+    hashes = []
+    for match in _INLINE_SCRIPT.finditer(html):
+        body = match.group(1).replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        digest = base64.b64encode(hashlib.sha256(body).digest()).decode("ascii")
+        hashes.append(f"'sha256-{digest}'")
+    script_src = " ".join(hashes) if hashes else "'none'"
+    return "; ".join(
+        (
+            "default-src 'none'",
+            f"script-src {script_src}",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data:",
+            "font-src 'self' data:",
+            "connect-src 'self'",
+            "base-uri 'none'",
+            "form-action 'none'",
+            "frame-ancestors 'none'",
+        )
+    )
+
+
+class _DashboardFile:
+    """The page bytes and their policy, re-read only when the file changes on disk."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._stamp: tuple[int, int] | None = None
+        self._body = b""
+        self._csp = ""
+
+    def load(self) -> tuple[bytes, str]:
+        stat = self._path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        with self._lock:
+            if stamp != self._stamp:
+                body = self._path.read_bytes()
+                self._body, self._csp, self._stamp = body, dashboard_csp(body), stamp
+            return self._body, self._csp
+
+
+_DASHBOARD = _DashboardFile(_DASHBOARD_PATH)
 
 
 def _sanitise(value):
@@ -619,6 +686,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         for key, value in (extra or {}).items():
             self.send_header(key, value)
         self.end_headers()
@@ -722,6 +790,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(self._config_payload())
             elif route == "/api/health":
                 self._send_json({"ok": True, "state": self.controller.state, "time": time.time()})
+            elif route == "/api/licenses":
+                self._serve_notices()
             elif route == "/api/run/export.jsonl":
                 self._serve_records("jsonl")
             elif route == "/api/run/export.csv":
@@ -819,19 +889,38 @@ class _Handler(BaseHTTPRequestHandler):
             "qps_burst": cfg.qps_burst,
             "source_ips": cfg.source_ips,
             "state": self.controller.state,
+            "version": __version__,
         }
 
     def _serve_dashboard(self) -> None:
         try:
-            body = _DASHBOARD_PATH.read_bytes()
+            body, csp = _DASHBOARD.load()
         except OSError:
             self._send(
                 HTTPStatus.NOT_FOUND,
-                b"dashboard/index.html is missing from the package",
+                b"dashboard/index.html is missing from the package; build it with `npm run build` in web/",
                 "text/plain; charset=utf-8",
             )
             return
-        self._send(HTTPStatus.OK, body, "text/html; charset=utf-8")
+        self._send(
+            HTTPStatus.OK,
+            body,
+            "text/html; charset=utf-8",
+            {
+                "Content-Security-Policy": csp,
+                "X-Frame-Options": "DENY",
+                "Referrer-Policy": "no-referrer",
+                "Cross-Origin-Opener-Policy": "same-origin",
+            },
+        )
+
+    def _serve_notices(self) -> None:
+        try:
+            body = _NOTICES_PATH.read_bytes()
+        except OSError:
+            self._error_json(HTTPStatus.NOT_FOUND, "THIRD_PARTY_NOTICES.txt is missing from the package")
+            return
+        self._send(HTTPStatus.OK, body, "text/plain; charset=utf-8")
 
     def _serve_stream(self) -> None:
         """Push a snapshot roughly once a second until the client goes away.

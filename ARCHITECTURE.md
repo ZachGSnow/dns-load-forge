@@ -21,12 +21,17 @@ src/dnsloadforge/
   stats.py           aggregation, rolling windows, percentiles, findings, verdict
   server.py          stdlib HTTP + SSE dashboard, run/compare control, list jobs, request screening
   mockappliance.py   simulated filtering appliance, 7 scenarios, standalone CLI
-  dashboard/index.html  the entire front end, one self-contained file (themes are CSS tokens)
+  dashboard/index.html  the front end: built from web/ into one self-contained file
+  dashboard/THIRD_PARTY_NOTICES.txt  licenses of the libraries bundled into that page
+web/                       the dashboard's source: React, Tailwind CSS, shadcn/ui, Recharts
+  src/lib/schema.ts        the snapshot contract on the TypeScript side
+  src/index.css            every theme, as CSS variables
+  scripts/postbuild.mjs    keeps the built page ASCII and free of external references
 scripts/
   Invoke-DnsLoadForge.ps1   PowerShell front end
   New-LabSourceIPs.ps1      create/remove the source-IP pool (elevated)
   Get-DnsLoadForgeCapture.ps1  pktmon wire capture + reconcile (elevated)
-tests/                     274 tests; no network required
+tests/                     290 tests; no network required
 runs/                      per-query record logs (gitignored)
 lists/cache/               fetched domain lists in a checkout (gitignored); a pip install uses
                            %LOCALAPPDATA%\dnsloadforge or ~/.cache/dnsloadforge instead
@@ -36,9 +41,9 @@ targets.example.json       a starting point for your own targets
 
 `spec.py` is a leaf module that imports nothing else from the package, and every other
 module agrees on the names it defines. Changing a `Category` value or a `QueryRecord`
-field means updating `stats.py`, `server.py` and `dashboard/index.html` together - the
-snapshot schema is documented in a comment block at the bottom of `spec.py`, and the
-dashboard is written against exactly that.
+field means updating `stats.py`, `server.py` and `web/src/lib/schema.ts` together (then
+rebuilding the page) - the snapshot schema is documented in a comment block at the bottom
+of `spec.py`, and the dashboard is written against exactly that.
 
 ## Data flow
 
@@ -221,22 +226,40 @@ because the lists genuinely disagree, so the tool reports what happened without 
 
 ### Themes
 
-Every colour in `dashboard/index.html` is a CSS variable, and a theme is one
-`:root[data-theme="..."]` block redefining them. Tints (alert glows, chips, button fills)
-use `color-mix()` over the tokens, so they follow the active palette. Canvas cannot read
-CSS, so `syncChartColors()` copies the chart colours out of the active theme on every
-change. The selection is remembered in `localStorage` (wrapped in try/catch) and applied by
-an inline script before first paint.
+Every colour is a CSS variable in `web/src/index.css`: shadcn/ui's token names
+(`--background`, `--card`, `--primary`, ...) plus the tool's own meanings (`--ok`,
+`--warn`, `--bad`, `--fp`, `--fn`) and chart series. Light is `:root`, Dark is `.dark`, and
+each palette is one `.dark[data-theme="..."]` block, so every component follows whichever
+is active. `npm test` parses those blocks and checks text and status colours for 4.5:1
+contrast on both the page and card surfaces. The selection is remembered in
+`localStorage` under the original key (a palette chosen in the old dashboard carries over)
+and applied by an inline script before first paint.
 
 ### The snapshot contract
 
 The dashboard renders one JSON object produced by `StatsAggregator.snapshot()`. Its
-schema is documented at the bottom of `spec.py` and is the only interface between
-backend and frontend - the front end is one self-contained HTML file with hand-drawn
-canvas charts, no framework, no build step and no external requests, so it works on an
-air-gapped segment. All dynamic strings go through `textContent`; a hostile hostname off
-the wire cannot inject markup. Payloads are serialised with `allow_nan=False` and fall
-back to a sanitiser, so a non-finite number can never produce invalid JSON.
+schema is documented at the bottom of `spec.py`, mirrored in `web/src/lib/schema.ts`, and
+is the only interface between backend and frontend. Every field is optional on the
+TypeScript side, because the page and the server can be different versions.
+
+### One file, no network, no Node at run time
+
+The front end is a React app built with shadcn/ui components and Recharts, but it ships
+as **one** self-contained HTML file: Vite inlines the scripts, styles and the Latin subset
+of the Geist fonts, and `web/scripts/postbuild.mjs` fails the build if the result refers
+to anything outside itself or contains a non-ASCII character. The built page is
+committed, so installing and running the tool needs Python only; Node is needed only to
+change the page, and CI rebuilds it and fails if the committed copy is stale.
+
+The server sends the page with a Content-Security-Policy built from the SHA-256 of each
+inline script (`dashboard_csp()`), so the browser itself refuses any other script and any
+connection to anywhere but this server, and `frame-ancestors 'none'` stops another site
+framing the Start button. Browsers normalise line endings before hashing a script, and a
+Windows checkout may store the page with CRLF, so the hashes are taken after the same
+normalisation (and `.gitattributes` pins the page to LF anyway). Values from the network
+are rendered as React text, never HTML: a hostile hostname off the wire cannot inject
+markup. Payloads are serialised with `allow_nan=False` and fall back to a sanitiser, so a
+non-finite number can never produce invalid JSON.
 
 ### Failures the code is built to have
 
@@ -257,9 +280,11 @@ back to a sanitiser, so a non-finite number can never produce invalid JSON.
 
 * **A new target**: add it to `targets.json` (or `BUILTIN_TARGETS` in `targets.py` for a
   preset). Declare `blocks` honestly; a target that blocks nothing should say `[]`.
-* **A new theme**: copy any `:root[data-theme]` block in `dashboard/index.html`, change the
-  tokens, and add its id to the `THEMES` array in the page script. Check
-  text contrast (4.5:1 against both panel surfaces) before shipping it.
+* **A new theme**: copy a `.dark[data-theme="..."]` block in `web/src/index.css`, change
+  the tokens, add it to `THEMES` in `web/src/lib/themes.ts` and to the palette list in
+  `web/index.html`'s pre-paint script, then run `npm test` (contrast) and `npm run build`.
+* **A new dashboard panel**: add the fields it reads to `web/src/lib/schema.ts`, build it
+  from the components in `web/src/components/ui`, and rebuild the page.
 
 * **A new domain source**: add an entry to `sources.json`. `format` selects the parser
   (`hosts`, `plain`, `rank_csv`); `ranked` marks a popularity list so its order drives

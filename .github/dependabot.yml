@@ -9,6 +9,16 @@ updates:
         update-types: [minor, patch]
     commit-message:
       prefix: build
+  # The dashboard's build toolchain and the libraries bundled into the page.
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: monthly
+    groups:
+      web-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: build
   - package-ecosystem: github-actions
     directory: /
     schedule:

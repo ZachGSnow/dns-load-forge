@@ -897,7 +897,9 @@ def _setup_mock(args: argparse.Namespace, catalogue: DomainCatalogue, config: Ru
     mock = _start_mock(args, catalogue)
     config.server = mock.host
     config.port = mock.port
-    config.target_name = f"Mock appliance ({args.mock_scenario})"
+    # Name what it will actually do: an overblocking "good" mock is not a good filter.
+    behaviour = "overblocking" if getattr(args, "mock_overblock", False) else args.mock_scenario
+    config.target_name = f"Mock appliance ({behaviour})"
     _wait_for_mock(mock)
     return mock
 

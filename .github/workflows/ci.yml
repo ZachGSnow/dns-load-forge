@@ -32,12 +32,48 @@ jobs:
         # The suite drives real UDP against a local mock appliance and needs no network.
         run: python -m unittest discover -s tests -t tests -v
 
-  # Single stable check name for branch protection; fails unless every matrix leg passed.
+  # The dashboard is built from web/ into src/dnsloadforge/dashboard/ and committed,
+  # so the Python package needs no Node at all.  This job proves the committed page
+  # is exactly what its source builds to.
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Lint
+        run: npm run lint
+      - name: Formatting
+        run: npm run format:check
+      - name: Unit tests (formatting, theme contrast)
+        run: npm test
+      - name: Type-check and build
+        run: npm run build
+      - name: The committed dashboard matches its source
+        working-directory: .
+        run: |
+          if ! git diff --exit-code --stat -- src/dnsloadforge/dashboard; then
+            echo "::error::src/dnsloadforge/dashboard is stale. Run 'npm run build' in web/ and commit the result."
+            exit 1
+          fi
+
+  # Single stable check name for branch protection; fails unless every job passed.
   ci:
     name: ci
-    needs: [test]
+    needs: [test, web]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: All matrix legs passed
-        run: test "${{ needs.test.result }}" = "success"
+      - name: All jobs passed
+        run: |
+          test "${{ needs.test.result }}" = "success"
+          test "${{ needs.web.result }}" = "success"

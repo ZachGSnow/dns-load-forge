@@ -1,0 +1,4 @@
+node_modules/
+# Vite's scratch output; the real build lands in ../src/dnsloadforge/dashboard/.
+dist/
+*.local
