@@ -56,4 +56,5 @@ export const DOWNLOADS = {
   json: "/api/run/export.json",
   history: "/api/history/export.json",
   capacity: "/api/capacity/export.json",
+  report: "/report",
 } as const

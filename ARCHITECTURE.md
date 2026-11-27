@@ -24,6 +24,8 @@ src/dnsloadforge/
   mockappliance.py   simulated filtering appliance, 8 scenarios, standalone CLI
   checks.py          deployment checks: identity, bypass, canaries, DNSSEC, SafeSearch
   capacity.py        capacity search: ramp, refine, and judge each step against the limits
+  history.py         finished runs kept across restarts (history.jsonl)
+  report.py          the session as one printable, script-free HTML page
   dashboard/index.html  the front end: built from web/ into one self-contained file
   dashboard/THIRD_PARTY_NOTICES.txt  licenses of the libraries bundled into that page
 web/                       the dashboard's source: React, Tailwind CSS, shadcn/ui, Recharts
@@ -34,7 +36,7 @@ scripts/
   Invoke-DnsLoadForge.ps1   PowerShell front end
   New-LabSourceIPs.ps1      create/remove the source-IP pool (elevated)
   Get-DnsLoadForgeCapture.ps1  pktmon wire capture + reconcile (elevated)
-tests/                     390 tests; no network required
+tests/                     404 tests; no network required
 runs/                      per-query record logs (gitignored)
 lists/cache/               fetched domain lists in a checkout (gitignored); a pip install uses
                            %LOCALAPPDATA%\dnsloadforge or ~/.cache/dnsloadforge instead
@@ -267,6 +269,23 @@ progress without a second code path.
 The mock's delayed replies now wait in a bounded queue, as an overloaded appliance's do.
 With an unbounded one, a step far above its capacity left seconds of replies queued, and
 the next, lower step failed on the backlog.
+
+### The report is a document, not a page
+
+`report.py` renders the session server-side into one HTML file, rather than having the
+dashboard print itself: a report has to open anywhere, from an email or a file share, years
+later, so it carries no script, no font and nothing fetched, and `/report` is served with a
+policy that admits no script at all. Every value is escaped and the file is plain ASCII.
+It describes the last *finished* run, never a capacity step: the search swaps the live
+statistics on each step so the Live page can follow it, and the report must not mistake
+the last step for the run.
+
+It also covers its own session only. The run history is saved across restarts
+(`history.py`, a JSON Lines file read back on start, compacted as it grows, tolerant of a
+line cut short by a crash), which is what lets a comparison span days; but a consultant
+testing one client's filter in the morning and another's in the afternoon must not hand the
+second client the first one's results, so the report filters the history to runs that
+finished after the dashboard started.
 
 ### Deployment checks are single queries with evidence
 

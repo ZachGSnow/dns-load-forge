@@ -1,4 +1,4 @@
-import { DownloadIcon, PlayIcon, SquareIcon } from "lucide-react"
+import { DownloadIcon, FileTextIcon, PlayIcon, SquareIcon } from "lucide-react"
 
 import { useRun } from "@/components/run-context"
 import { Badge } from "@/components/ui/badge"
@@ -85,11 +85,21 @@ function ExportMenu() {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64">
+        <DropdownMenuItem asChild>
+          <a href={DOWNLOADS.report} target="_blank" rel="noopener noreferrer">
+            <FileTextIcon />
+            Report
+          </a>
+        </DropdownMenuItem>
+        <DropdownMenuLabel className="pt-0 font-normal text-muted-foreground">
+          This session as one page: the run, any comparison, capacity search and
+          checks. Print it to save a PDF.
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
         <DropdownMenuLabel className="font-normal text-muted-foreground">
           Per-query evidence for this run. Needs the server started with
           --record-log.
         </DropdownMenuLabel>
-        <DropdownMenuSeparator />
         {(["csv", "jsonl", "json"] as const).map((format) => (
           <DropdownMenuItem key={format} asChild>
             <a href={DOWNLOADS[format]} download>

@@ -42,6 +42,10 @@ reachable only from the machine that runs it:
   (by hash) and lets it talk to this server and nothing else, and it refuses to be framed
   by another site, so its Start button cannot be clickjacked.
 * Everything the page renders from the network is inserted as text, never markup.
+* The report at `/report` is served with a policy that admits no script at all, and holds
+  only the current session's runs: saved runs from earlier sessions, which may be another
+  client's, are left out. The run history itself (`history.jsonl`) names the targets you
+  tested; `--no-history` keeps none, and *Clear* on the Compare page deletes it.
 
 If you put it behind a reverse proxy, add authentication there.
 

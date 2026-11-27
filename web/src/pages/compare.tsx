@@ -1,6 +1,12 @@
-import { DownloadIcon, GitCompareArrowsIcon, TrophyIcon } from "lucide-react"
+import {
+  DownloadIcon,
+  GitCompareArrowsIcon,
+  Trash2Icon,
+  TrophyIcon,
+} from "lucide-react"
 import * as React from "react"
 import { Bar, BarChart, CartesianGrid, LabelList, XAxis, YAxis } from "recharts"
+import { toast } from "sonner"
 
 import { useRun } from "@/components/run-context"
 import { VerdictBadge } from "@/components/status"
@@ -22,6 +28,16 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
 import {
   Empty,
   EmptyDescription,
@@ -45,7 +61,7 @@ import { cn } from "@/lib/utils"
 import { DEMO, DOWNLOADS } from "@/lib/api"
 import { CATEGORY_LABELS } from "@/lib/constants"
 import { fmtFraction, fmtInt, fmtMs, fmtPct, fmtRate, num } from "@/lib/format"
-import { fetchHistory } from "@/lib/resources"
+import { clearHistory, fetchHistory } from "@/lib/resources"
 import { dominantSignal } from "@/lib/signals"
 import type { HistoryRun, Target } from "@/lib/schema"
 import { endpointOf } from "@/lib/transport"
@@ -120,6 +136,59 @@ function TargetPick({
         ) : null}
       </div>
     </label>
+  )
+}
+
+function ClearHistory({
+  disabled,
+  onCleared,
+}: {
+  disabled: boolean
+  onCleared: () => void
+}) {
+  const [open, setOpen] = React.useState(false)
+  const [busy, setBusy] = React.useState(false)
+  const clear = async () => {
+    setBusy(true)
+    const result = await clearHistory()
+    setBusy(false)
+    setOpen(false)
+    if (result.ok) {
+      toast.success(result.message)
+      onCleared()
+    } else toast.error(result.message)
+  }
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm" disabled={disabled}>
+          <Trash2Icon />
+          Clear
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Clear the run history?</DialogTitle>
+          <DialogDescription>
+            Every run in this table is forgotten, including the ones saved from
+            earlier sessions. Export the JSON first to keep them.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="outline">Cancel</Button>
+          </DialogClose>
+          <Button
+            variant="destructive"
+            disabled={busy}
+            onClick={() => void clear()}
+          >
+            {busy ? <Spinner /> : <Trash2Icon />}
+            Clear history
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -345,10 +414,15 @@ export function ComparePage() {
         <CardHeader>
           <CardTitle>Results</CardTitle>
           <CardDescription>
-            Every finished run lands here, comparison or not. The best value in
-            each column is highlighted.
+            Every finished run lands here, comparison or not, and stays across
+            restarts until you clear it. The best value in each column is
+            highlighted.
           </CardDescription>
-          <CardAction>
+          <CardAction className="flex gap-2">
+            <ClearHistory
+              disabled={DEMO || !runs.length}
+              onCleared={() => void refresh()}
+            />
             <Button variant="outline" size="sm" asChild disabled={DEMO}>
               <a href={DEMO ? "#" : DOWNLOADS.history} download>
                 <DownloadIcon />

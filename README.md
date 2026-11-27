@@ -321,7 +321,8 @@ page with `?demo=1` to see it with generated data and no backend.
 and `POST /api/control` starts and stops runs (`{"action":"start","target":"Quad9"}`,
 `{"action":"compare","targets":[...],"duration_s":60}`,
 `{"action":"capacity","target":"...","max_qps":20000}`, `{"action":"stop"}`). `GET
-/api/history` returns the finished runs, `GET /api/capacity` the capacity search, and `/api/sources` with `POST
+/api/history` returns the finished runs (`POST /api/history/clear` forgets them), `GET /api/capacity` the
+capacity search, `GET /report` the printable report, and `/api/sources` with `POST
 /api/sources/refresh` and `/api/sources/enabled` manage the domain lists. The per-query
 evidence is downloadable as CSV, JSONL or JSON.
 
@@ -329,6 +330,23 @@ The dashboard can start load tests and has no login, so it only answers on `127.
 refuses cross-origin writes, non-JSON writes and DNS-rebinding requests, cannot be framed by
 another site, and binding it anywhere else needs `--allow-remote-dashboard`. Details in
 [SECURITY.md](SECURITY.md).
+
+## Reports and history
+
+**Report.** In the dashboard, **Export > Report** (or `Ctrl K`, *Open the report*) opens
+the session as one printable page: the verdict and the figures, the table by category, the
+names that were wrongly blocked or leaked, how blocks were signalled, and, when the session
+has them, the comparison, the capacity search and the deployment checks. It is a single
+HTML file with no scripts and nothing fetched, so it can go out as an attachment; print it
+and choose *Save as PDF* for a PDF. `run --report report.html` writes the same page when a
+run ends, with or without the dashboard. A report covers its own session only: runs saved
+from earlier sessions, which may have been another client's network, never appear in it.
+
+**History.** Every finished run is saved to `runs/history.jsonl` in a checkout, or to
+`%LOCALAPPDATA%\dnsloadforge` (`~/.local/share/dnsloadforge`) for an installed copy;
+`DNSLOADFORGE_DATA` moves it. The last 50 fill the Compare table when the dashboard starts
+again, so a comparison can span days. **Clear** on the Compare page empties it, and
+`--no-history` neither reads nor saves it.
 
 ## Reading the verdict
 
@@ -506,7 +524,7 @@ full 10,000 qps soak.
 python -m unittest discover -s tests -t tests -v
 ```
 
-390 tests, no network access required. The ones that matter most are the seven
+404 tests, no network access required. The ones that matter most are the seven
 end-to-end verdict scenarios in `tests/test_engine.py`, which drive real UDP at a real
 mock appliance and assert that an honest filter is reported as `filtering` **while** a
 passthrough, overblocking and lossy filter each produce a different, correct verdict.

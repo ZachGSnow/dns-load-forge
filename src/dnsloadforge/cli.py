@@ -29,14 +29,16 @@ import time
 import webbrowser
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 from . import __version__
 from .compare import format_comparison, summarise_run
 from .domainlist import DomainCatalogue, default_cache_dir, load_catalogue
 from .engine import detect_local_ip, run_threaded
+from .history import HISTORY_FILE, HistoryStore, default_data_dir
 from .mockappliance import SCENARIOS, MockAppliance
 from .profiles import ROLES
+from .report import render_report
 from .server import DEFAULT_HOST, DEFAULT_PORT, COMPARE_COOLDOWN_S, _is_loopback, serve
 from .spec import CATEGORY_EXPECTED, DEFAULT_PORTS, TRANSPORT_LABELS, TRANSPORTS, Category, RunConfig
 from .stats import StatsAggregator
@@ -132,8 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"DNS Load Forge {__version__}")
     sub = parser.add_subparsers(dest="command")
 
-    _add_common_run_args(sub.add_parser("run", help="run a simulation and serve the dashboard"))
-    _add_common_run_args(sub.add_parser("serve", help="serve the dashboard and wait for Start"))
+    run = sub.add_parser("run", help="run a simulation and serve the dashboard")
+    _add_common_run_args(run)
+    _add_results_args(run, report=True)
+    serve_parser = sub.add_parser("serve", help="serve the dashboard and wait for Start")
+    _add_common_run_args(serve_parser)
+    _add_results_args(serve_parser)
     _add_common_run_args(
         sub.add_parser(
             "bench",
@@ -299,6 +305,23 @@ def _add_transport_args(group) -> None:
         action="store_true",
         help="do not check the server's certificate: still encrypted, but not authenticated",
     )
+
+
+def _add_results_args(parser: argparse.ArgumentParser, *, report: bool = False) -> None:
+    """What a session keeps: the run history, and for ``run`` a report."""
+    results = parser.add_argument_group("results")
+    results.add_argument(
+        "--no-history",
+        action="store_true",
+        help="do not read or save the run history that fills the comparison table across restarts",
+    )
+    if report:
+        results.add_argument(
+            "--report",
+            default=None,
+            metavar="PATH",
+            help="when the run ends, write a self-contained HTML report of it to PATH (prints to PDF)",
+        )
 
 
 def _add_common_run_args(
@@ -1188,6 +1211,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         cache_dir=getattr(args, "cache_dir", None),
         allow_public_target=getattr(args, "allow_public_target", False),
         start_payload={"targets": [t.name for t in chosen]} if len(chosen) > 1 else None,
+        history_path=_history_path(args),
     )
     print()
     print(f"  dashboard       {server.url}")
@@ -1211,6 +1235,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     summary = controller.summary()
     print_summary(summary, as_json=args.json)
+    _write_report(args, controller.report_html)
 
     if len(controller.history) > 1 and not getattr(args, "json", False):
         print()
@@ -1292,6 +1317,14 @@ def _run_headless(
         "wall_seconds": round(time.time() - started, 2),
     }
     print_summary(summary, as_json=args.json)
+    record = summarise_run(snapshot, config, index=1)
+    _save_history(args, [record])
+    _write_report(
+        args,
+        lambda: render_report(
+            snapshot, config, history=[record], lists=_lists_info(catalogue), achieved_qps=summary["achieved_qps"]
+        ),
+    )
     if mock is not None:
         if not getattr(args, "json", False):
             print(f"  mock appliance counters: {mock.stats}")
@@ -1307,6 +1340,7 @@ def _run_headless_compare(
 ) -> int:
     """Run each target in turn on the same seed and print them side by side."""
     summaries: list[dict] = []
+    last: tuple[dict, RunConfig, float] | None = None
     for index, target in enumerate(chosen):
         if index:
             time.sleep(COMPARE_COOLDOWN_S)
@@ -1325,11 +1359,12 @@ def _run_headless_compare(
         if not getattr(args, "json", False):
             print(f"\n  [{index + 1}/{len(chosen)}] {target.name} ({run_config.target})")
         try:
-            run_threaded(run_config, catalogue, stats=stats, threads=run_config.threads)
+            results = run_threaded(run_config, catalogue, stats=stats, threads=run_config.threads)
         except KeyboardInterrupt:
             print("\n  interrupted")
             break
-        summaries.append(summarise_run(stats.snapshot(), run_config, index=index + 1))
+        last = (stats.snapshot(), run_config, sum(r.achieved_qps for r in results))
+        summaries.append(summarise_run(last[0], run_config, index=index + 1))
 
     if getattr(args, "json", False):
         print(json.dumps({"runs": summaries}, indent=2, default=str))
@@ -1337,7 +1372,56 @@ def _run_headless_compare(
         print()
         print("COMPARISON (same seed and traffic for every target)")
         print(format_comparison(summaries))
+    _save_history(args, summaries)
+    if last is not None:
+        snapshot, run_config, achieved = last
+        _write_report(
+            args,
+            lambda: render_report(
+                snapshot, run_config, history=summaries, lists=_lists_info(catalogue), achieved_qps=achieved
+            ),
+        )
     return 0
+
+
+def _history_path(args: argparse.Namespace) -> Path | None:
+    """Where the run history is kept, or None with --no-history."""
+    if getattr(args, "no_history", False):
+        return None
+    return default_data_dir() / HISTORY_FILE
+
+
+def _save_history(args: argparse.Namespace, records: Sequence[dict]) -> None:
+    path = _history_path(args)
+    if path is None:
+        return
+    store = HistoryStore(path)
+    for record in records:
+        problem = store.append(record)
+        if problem:
+            print(f"  warning: {problem}", file=sys.stderr)
+            return
+
+
+def _write_report(args: argparse.Namespace, render: Callable[[], str]) -> None:
+    """Write --report, if it was asked for, once the run is over."""
+    path = getattr(args, "report", None)
+    if not path:
+        return
+    try:
+        destination = Path(path)
+        if destination.parent != Path(""):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(render(), encoding="ascii")
+    except OSError as exc:
+        print(f"  could not write the report to {path}: {exc}", file=sys.stderr)
+        return
+    if not getattr(args, "json", False):
+        print(f"  report          {path}")
+
+
+def _lists_info(catalogue: DomainCatalogue) -> dict:
+    return {"total": catalogue.total(), "fetched_at": catalogue.fetched_at}
 
 
 def _start_mock(args: argparse.Namespace, catalogue: DomainCatalogue) -> MockAppliance:
@@ -1767,6 +1851,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         catalogue_loader=catalogue_loader(args),
         cache_dir=getattr(args, "cache_dir", None),
         allow_public_target=getattr(args, "allow_public_target", False),
+        history_path=_history_path(args),
     )
     print()
     print(f"  dashboard       {server.url}  (press Start to begin)")

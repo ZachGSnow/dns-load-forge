@@ -47,6 +47,7 @@ from .domainlist import (
     source_inventory,
 )
 from .engine import DnsLoadEngine, RunResult, run_threaded
+from .history import HistoryStore
 from .spec import RunConfig
 from .stats import RecordLog, StatsAggregator
 from .targets import Target, adhoc_target, find_target, public_target_problem
@@ -74,6 +75,12 @@ HISTORY_LIMIT = 50
 
 #: Largest value the dashboard may set for a rate or duration.
 MAX_OVERRIDE = 1_000_000.0
+
+#: The report is text and inline CSS, so its policy admits no script at all.
+REPORT_CSP = (
+    "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; "
+    "form-action 'none'; frame-ancestors 'none'"
+)
 
 _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
@@ -209,6 +216,7 @@ class RunController:
         record_format: str = "jsonl",
         record_sample: float = 1.0,
         log: Callable[[str], None] = print,
+        history_path: str | Path | None = None,
     ) -> None:
         self.config = config
         self.catalogue = catalogue
@@ -231,7 +239,15 @@ class RunController:
         self._state = "idle"
         self._stop_requested = False
         self.run_count = 0
-        self.history: list[dict] = []
+        #: Finished runs, oldest first; saved to ``history_path`` when there is one,
+        #: so the comparison table survives a restart.
+        self._history_store = HistoryStore(history_path, HISTORY_LIMIT)
+        self.history: list[dict] = self._history_store.load()
+        #: When this session began: the report covers runs from here on, never a saved
+        #: run from an earlier session, which may have been another client's network.
+        self._session_started = time.time()
+        #: The last finished run (not a capacity step): what the report shows.
+        self._last_run: tuple[dict, RunConfig, float] | None = None
         self._plan: list[RunConfig] = []
         self._job: dict = {"kind": "", "state": "idle"}
         self._job_thread: threading.Thread | None = None
@@ -299,6 +315,39 @@ class RunController:
     def history_payload(self) -> dict:
         with self._lock:
             return {"runs": list(self.history)}
+
+    def clear_history(self) -> dict:
+        problem = self._history_store.clear()
+        if problem:
+            return {"ok": False, "message": problem}
+        with self._lock:
+            self.history = []
+        return {"ok": True, "message": "the run history is cleared"}
+
+    def report_html(self) -> str:
+        """The session as a printable HTML report: the latest run, and the
+        comparison, capacity search and checks when there are any."""
+        from .report import render_report
+
+        with self._lock:
+            history = [run for run in self.history if float(run.get("finished_at") or 0) >= self._session_started]
+            checks = dict(self._checks) if self._checks.get("state") == "done" else None
+            capacity = dict(self._capacity) if self._capacity.get("steps") else None
+            last = self._last_run
+        # The last finished run, never a capacity step: a search's steps are its own.
+        if last is None:
+            snapshot, config, achieved = StatsAggregator().snapshot(), self.config, None
+        else:
+            snapshot, config, achieved = last
+        return render_report(
+            snapshot,
+            config,
+            history=history,
+            checks=checks,
+            capacity=capacity,
+            lists=self.lists_payload(),
+            achieved_qps=achieved or None,
+        )
 
     # -- control ------------------------------------------------------------
 
@@ -532,10 +581,15 @@ class RunController:
             if self.record_log is not None:
                 self.record_log.close()
         if not failed:
-            summary = summarise_run(self.stats.snapshot(), config, index=run_index)
+            snapshot = self.stats.snapshot()
+            summary = summarise_run(snapshot, config, index=run_index)
             with self._lock:
                 self.history.append(summary)
                 del self.history[:-HISTORY_LIMIT]
+                self._last_run = (snapshot, config, sum(r.achieved_qps for r in self._results))
+            problem = self._history_store.append(summary)
+            if problem:
+                self._log(f"warning: {problem}")
         return failed
 
     def _register_engine(self, engine: DnsLoadEngine) -> None:
@@ -724,9 +778,10 @@ class RunController:
                 p95_ms=_number(limits, "p95_ms", 100.0),
             )
             slo.validate()
-            name = payload.get("target") or self.config.target_name
+            name = payload.get("target")
             if name is not None and not isinstance(name, str):
                 raise ValueError("target must be a target name")
+            # No name: the target the session is aimed at, as the checks use it.
             target = self._check_target(name or None)
             problem = public_target_problem(target, plan.max_qps, self._allow_public_target)
             if problem:
@@ -1062,6 +1117,20 @@ class _Handler(BaseHTTPRequestHandler):
                 self._serve_notices()
             elif route == "/api/checks":
                 self._send_json(self.controller.checks_payload())
+            elif route == "/report":
+                stamp = time.strftime("%Y%m%d-%H%M")
+                self._send(
+                    HTTPStatus.OK,
+                    self.controller.report_html().encode("ascii"),
+                    "text/html; charset=utf-8",
+                    {
+                        # No script at all: the page is text and inline CSS.
+                        "Content-Security-Policy": REPORT_CSP,
+                        "X-Frame-Options": "DENY",
+                        "Referrer-Policy": "no-referrer",
+                        "Content-Disposition": f'inline; filename="dnsloadforge-report-{stamp}.html"',
+                    },
+                )
             elif route == "/api/capacity":
                 self._send_json(self.controller.capacity_payload())
             elif route == "/api/capacity/export.json":
@@ -1114,6 +1183,8 @@ class _Handler(BaseHTTPRequestHandler):
                     self._error_json(HTTPStatus.BAD_REQUEST, "action must be 'start', 'compare', 'capacity' or 'stop'")
             elif route == "/api/checks/run":
                 self._send_json(self.controller.start_checks(payload))
+            elif route == "/api/history/clear":
+                self._send_json(self.controller.clear_history())
             elif route == "/api/sources/refresh":
                 slugs = payload.get("slugs")
                 if slugs is not None and not (isinstance(slugs, list) and all(isinstance(s, str) for s in slugs)):
@@ -1327,6 +1398,7 @@ def serve(
     cache_dir: str | None = None,
     allow_public_target: bool = False,
     start_payload: dict | None = None,
+    history_path: str | Path | None = None,
 ) -> tuple[DashboardServer, RunController]:
     """Start the dashboard and return the live server.
 
@@ -1345,6 +1417,7 @@ def serve(
         record_format=record_format,
         record_sample=record_sample,
         log=log,
+        history_path=history_path,
     )
     server = DashboardServer((host, port), controller)
     thread = threading.Thread(target=server.serve_forever, name="dnsloadforge-http", daemon=True)

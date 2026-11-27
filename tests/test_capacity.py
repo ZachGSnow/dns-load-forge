@@ -212,6 +212,10 @@ class TestControllerAgainstTheMock(unittest.TestCase):
         self.assertTrue(any("SERVFAIL" in r or "rate-limited" in r for s in failed for r in s["reasons"]), failed)
         self.assertEqual(controller.state, "stopped")
         self.assertEqual(controller.history, [], "the steps do not fill the comparison history")
+        # The report shows the search, and no step of it posing as "the run".
+        page = controller.report_html()
+        self.assertIn("<h2>Capacity", page)
+        self.assertNotIn("<h2>The run", page)
 
     def test_bad_requests_and_public_targets_are_refused(self) -> None:
         public = Target(name="Shared", server="9.9.9.9", kind="public")
