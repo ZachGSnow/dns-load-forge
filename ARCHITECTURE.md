@@ -31,7 +31,7 @@ scripts/
   Invoke-DnsLoadForge.ps1   PowerShell front end
   New-LabSourceIPs.ps1      create/remove the source-IP pool (elevated)
   Get-DnsLoadForgeCapture.ps1  pktmon wire capture + reconcile (elevated)
-tests/                     288 tests; no network required
+tests/                     290 tests; no network required
 runs/                      per-query record logs (gitignored)
 lists/cache/               fetched domain lists in a checkout (gitignored); a pip install uses
                            %LOCALAPPDATA%\dnsloadforge or ~/.cache/dnsloadforge instead
