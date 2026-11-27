@@ -3,6 +3,7 @@ import {
   DatabaseIcon,
   GitCompareArrowsIcon,
   InfoIcon,
+  ListChecksIcon,
   RadarIcon,
 } from "lucide-react"
 import type * as React from "react"
@@ -42,6 +43,12 @@ export const NAV: {
     label: "Compare",
     description: "Identical seeded traffic sent to each target in turn",
     icon: GitCompareArrowsIcon,
+  },
+  {
+    route: "checks",
+    label: "Checks",
+    description: "Identity, bypass, encrypted DNS, DNSSEC and SafeSearch",
+    icon: ListChecksIcon,
   },
   {
     route: "lists",

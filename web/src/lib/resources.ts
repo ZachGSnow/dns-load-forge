@@ -1,5 +1,6 @@
 import { DEMO, getJSON, postJSON } from "@/lib/api"
 import {
+  demoChecks,
   demoConfig,
   demoHistory,
   demoLists,
@@ -7,6 +8,7 @@ import {
   demoTargets,
 } from "@/lib/demo"
 import type {
+  ChecksPayload,
   ConfigPayload,
   ControlResponse,
   HistoryPayload,
@@ -25,6 +27,8 @@ export const fetchLists = () =>
   DEMO ? demo(demoLists) : getJSON<ListsPayload>("/api/lists")
 export const fetchSources = () =>
   DEMO ? demo(demoSources) : getJSON<SourcesPayload>("/api/sources")
+export const fetchChecks = () =>
+  DEMO ? demo(demoChecks) : getJSON<ChecksPayload>("/api/checks")
 export const fetchConfig = () =>
   DEMO ? demo(demoConfig) : getJSON<ConfigPayload>("/api/config")
 
@@ -99,5 +103,16 @@ export async function setSourceEnabled(
   return describe(
     enabled ? "enable" : "disable",
     await postJSON<ControlResponse>("/api/sources/enabled", { slug, enabled })
+  )
+}
+
+export async function runChecks(
+  target: string | undefined,
+  network: boolean
+): Promise<ActionResult> {
+  if (DEMO) return DEMO_RESULT
+  return describe(
+    "checks",
+    await postJSON<ControlResponse>("/api/checks/run", { target, network })
   )
 }

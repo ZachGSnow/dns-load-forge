@@ -646,7 +646,17 @@ _SAFESEARCH = (
 
 def check_safesearch(ctx: CheckContext) -> CheckResult:
     names = [(name, "A") for _, user, targets in _SAFESEARCH for name in (user, *targets)]
+    names.append(("example.com", "A"))
     answers = dict(zip([n for n, _ in names], ctx.query_many(names)))
+    control = set(answers["example.com"].addresses)
+    if control and all(set(answers[n].addresses) == control for n, _ in names):
+        # A resolver that answers every name with the same address (a captive
+        # portal, a misconfigured sinkhole, the mock) makes the comparison meaningless.
+        return CheckResult(
+            "safesearch", "Content controls", "SafeSearch enforcement", "info",
+            "Could not tell: every name, unrelated ones included, resolved to the same address.",
+            "", [answers[n].as_dict() for n, _ in names],
+        )
     enforced, not_enforced = [], []
     for engine, user, targets in _SAFESEARCH:
         seen = set(answers[user].addresses)

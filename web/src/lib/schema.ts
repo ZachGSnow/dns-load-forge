@@ -284,3 +284,48 @@ export interface ControlResponse {
   message?: string
   error?: string
 }
+
+export type CheckStatus = "pass" | "warn" | "fail" | "error" | "info" | "skip"
+
+/** One query a check made, and what came back. */
+export interface CheckEvidence {
+  server?: string
+  qname?: string
+  qtype?: string
+  rcode?: string
+  answer?: string
+  ede?: string
+  nsid?: string
+  ad?: boolean
+  latency_ms?: number
+  error?: string
+  vendor?: string
+  kind?: string
+  blocked?: string
+}
+
+export interface CheckResult {
+  id: string
+  group: string
+  title: string
+  status: CheckStatus
+  summary: string
+  detail?: string
+  evidence?: CheckEvidence[]
+}
+
+export interface ChecksPayload {
+  state?: "idle" | "running" | "done" | "error"
+  target?: Target
+  network?: boolean
+  current?: string
+  started_at?: number
+  finished_at?: number
+  results?: CheckResult[]
+  summary?: {
+    counts?: Record<string, number>
+    worst?: CheckStatus
+    total?: number
+  }
+  error?: string
+}

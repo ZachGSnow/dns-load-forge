@@ -5,6 +5,7 @@
 
 import { CATEGORY_LABELS, CATEGORY_ORDER } from "@/lib/constants"
 import type {
+  ChecksPayload,
   ConfigPayload,
   FindingRow,
   HistoryPayload,
@@ -510,4 +511,197 @@ export const demoConfig: ConfigPayload = {
   qps_burst: 1,
   state: "running",
   version: "demo",
+}
+
+const ev = (
+  qname: string,
+  qtype: string,
+  rcode: string,
+  answer: string,
+  extra: Record<string, unknown> = {}
+) => ({
+  server: "10.1.106.5",
+  qname,
+  qtype,
+  rcode,
+  answer,
+  ede: "",
+  nsid: "",
+  ad: false,
+  latency_ms: 12,
+  error: "",
+  ...extra,
+})
+
+export const demoChecks: ChecksPayload = {
+  state: "done",
+  network: true,
+  target: {
+    name: "Lab appliance",
+    server: "10.1.106.5",
+    port: 53,
+    kind: "appliance",
+  },
+  started_at: Date.now() / 1000 - 40,
+  finished_at: Date.now() / 1000 - 31,
+  summary: {
+    counts: { fail: 1, warn: 3, pass: 6, info: 3 },
+    worst: "fail",
+    total: 13,
+  },
+  results: [
+    {
+      id: "identity",
+      group: "Resolver",
+      title: "Who answers",
+      status: "info",
+      summary:
+        "Answers as filter-a.lab; reaches the internet from 203.0.113.53 (AS64500 EXAMPLE-NET); passes no client subnet upstream.",
+      detail:
+        "Confirms which resolver handles the queries and which upstream it uses.",
+      evidence: [
+        ev("example.com", "A", "NOERROR", "198.51.100.10", {
+          nsid: "filter-a.lab",
+        }),
+        ev("whoami.ds.akahelp.net", "TXT", "NOERROR", "ns 203.0.113.53"),
+      ],
+    },
+    {
+      id: "interception",
+      group: "This network",
+      title: "DNS interception",
+      status: "pass",
+      summary:
+        "Not intercepted: a query to 192.0.2.1 (an address no DNS server uses) went unanswered.",
+      evidence: [
+        ev("example.com", "A", "-", "no answer", {
+          server: "192.0.2.1",
+          error: "no answer",
+        }),
+      ],
+    },
+    {
+      id: "plain-bypass",
+      group: "This network",
+      title: "Plain DNS bypass",
+      status: "warn",
+      summary:
+        "Google answered directly on port 53: a client can skip the filter by changing its DNS server.",
+      detail:
+        "Block outbound port 53 except to the filter, or redirect it there.",
+      evidence: [
+        ev("example.com", "A", "NOERROR", "93.184.215.14", {
+          server: "8.8.8.8",
+          nsid: "gpdns-ord",
+        }),
+      ],
+    },
+    {
+      id: "encrypted-bypass",
+      group: "This network",
+      title: "Encrypted DNS bypass",
+      status: "pass",
+      summary: "Public DoH (443) and DoT (853) endpoints were not reachable.",
+    },
+    {
+      id: "firefox-canary",
+      group: "Encrypted DNS",
+      title: "Firefox canary",
+      status: "pass",
+      summary:
+        "use-application-dns.net does not resolve: Firefox will not turn on DNS over HTTPS by itself.",
+      evidence: [
+        ev("use-application-dns.net", "A", "NXDOMAIN", "(no records)"),
+      ],
+    },
+    {
+      id: "private-relay",
+      group: "Encrypted DNS",
+      title: "iCloud Private Relay",
+      status: "warn",
+      summary:
+        "Only mask-h2.icloud.com is blocked: Private Relay can still start through the other name.",
+      detail:
+        "Answer NXDOMAIN for both mask.icloud.com and mask-h2.icloud.com.",
+      evidence: [
+        ev("mask.icloud.com", "A", "NOERROR", "17.248.168.210"),
+        ev("mask-h2.icloud.com", "A", "NXDOMAIN", "(no records)"),
+      ],
+    },
+    {
+      id: "ddr",
+      group: "Encrypted DNS",
+      title: "Designated resolvers (DDR)",
+      status: "info",
+      summary:
+        "Designates no encrypted resolver: Windows 11 and Apple devices stay on plain DNS to it.",
+    },
+    {
+      id: "dnssec",
+      group: "Security",
+      title: "DNSSEC validation",
+      status: "pass",
+      summary:
+        "Validates DNSSEC: a deliberately broken zone (dnssec-failed.org) fails instead of resolving.",
+      evidence: [
+        ev("dnssec-failed.org", "A", "SERVFAIL", "(no records)", {
+          ede: "6 DNSSEC Bogus",
+        }),
+        ev("isc.org", "A", "NOERROR", "151.101.3.42", { ad: true }),
+      ],
+    },
+    {
+      id: "rebinding",
+      group: "Security",
+      title: "DNS rebinding protection",
+      status: "pass",
+      summary: "Public names that point at private addresses were stopped.",
+    },
+    {
+      id: "safesearch",
+      group: "Content controls",
+      title: "SafeSearch enforcement",
+      status: "warn",
+      summary: "Enforced for Google, Bing, DuckDuckGo; not for YouTube.",
+      detail:
+        "This target is expected to block adult content, so a gap here is worth closing.",
+    },
+    {
+      id: "vendor-tests",
+      group: "Policy",
+      title: "Vendor test domains",
+      status: "info",
+      summary: "Blocked 2 of 10: Cisco Umbrella (phishing, malware).",
+      evidence: [
+        ev("internetbadguys.com", "A", "NXDOMAIN", "(no records)", {
+          vendor: "Cisco Umbrella",
+          kind: "phishing",
+          blocked: "NXDOMAIN",
+        }),
+        ev("malware.testcategory.com", "A", "NOERROR", "104.18.5.35", {
+          vendor: "Cloudflare",
+          kind: "malware",
+          blocked: "",
+        }),
+      ],
+    },
+    {
+      id: "cross-type",
+      group: "Policy",
+      title: "Blocked for every query type",
+      status: "fail",
+      summary:
+        "Blocked for A but answered with real addresses for internetbadguys.com HTTPS.",
+      detail:
+        "A browser connects to AAAA and HTTPS-record addresses without asking for A.",
+      evidence: [
+        ev(
+          "internetbadguys.com",
+          "HTTPS",
+          "NOERROR",
+          "1 . (hints 198.51.100.7)"
+        ),
+      ],
+    },
+  ],
 }
