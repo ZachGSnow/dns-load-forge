@@ -52,6 +52,7 @@ from .spec import (
     is_reverse_name,
 )
 from .stats import RecordLog, StatsAggregator
+from .transports import QueryIds, TransportError, make_channel
 
 __all__ = [
     "BLOCK_SIGNALS",
@@ -275,7 +276,7 @@ class RunResult:
         return self.sent / duration if duration > 0 else 0.0
 
 
-class _QueryProtocol(asyncio.DatagramProtocol):
+class _QueryProtocol(QueryIds, asyncio.DatagramProtocol):
     """One connected UDP socket, and the queries outstanding on it.
 
     The endpoint is created with a remote address, so the socket is connected:
@@ -283,6 +284,9 @@ class _QueryProtocol(asyncio.DatagramProtocol):
     keeps a stray responder on the network from polluting the results.  It also
     means an ICMP port-unreachable arrives as ``error_received`` -- the fastest
     possible signal that the target address or port is simply wrong.
+
+    TCP, DoT and DoH runs use a connection pool from ``transports.py`` in its
+    place, which offers the engine the same attributes.
     """
 
     def __init__(self, engine: "DnsLoadEngine", index: int, source_ip: str) -> None:
@@ -304,16 +308,6 @@ class _QueryProtocol(asyncio.DatagramProtocol):
 
     def connection_lost(self, exc: Exception | None) -> None:  # type: ignore[override]
         pass
-
-    def alloc_qid(self) -> int:
-        """Next unused transaction ID on this socket.  IDs are per-socket, so a
-        collision only matters among this socket's outstanding queries."""
-        for _ in range(0xFFFF):
-            qid = self.next_qid
-            self.next_qid = 1 if qid >= 0xFFFF else qid + 1
-            if qid not in self.pending:
-                return qid
-        raise RuntimeError("transaction ID space exhausted: too many queries in flight on one socket")
 
 
 class DnsLoadEngine:
@@ -465,6 +459,10 @@ class DnsLoadEngine:
             if not targets:
                 targets = [(self.shard_index % len(self._bind_ips), self._bind_ips[self.shard_index % len(self._bind_ips)])]
 
+        if self.config.transport != "udp":
+            await self._open_channels(targets)
+            return
+
         for index, ip in targets:
             protocol = _QueryProtocol(self, index, ip)
             try:
@@ -488,6 +486,26 @@ class DnsLoadEngine:
 
         if not self._protocols:
             raise RuntimeError("no sending sockets were created")
+
+    async def _open_channels(self, targets: list[tuple[int, str]]) -> None:
+        """TCP, DoT and DoH: a connection pool per source address, all opened
+        before the first query so no handshake is counted as latency."""
+        channels = [
+            make_channel(
+                self, self.config, index, ip, channels=len(targets), shard_count=self.shard_count, burst=MAX_BURST
+            )
+            for index, ip in targets
+        ]
+        results = await asyncio.gather(*(channel.open() for channel in channels), return_exceptions=True)
+        failure = next((r for r in results if isinstance(r, BaseException)), None)
+        if failure is not None:
+            for channel in channels:
+                channel.close()
+            await asyncio.gather(*(channel.wait_closed() for channel in channels))
+            if isinstance(failure, TransportError):
+                raise OSError(f"cannot connect to {self.config.target}: {failure}") from failure
+            raise failure
+        self._protocols.extend(channels)
 
     def _close_sockets(self) -> None:
         for protocol in self._protocols:
@@ -541,7 +559,13 @@ class DnsLoadEngine:
             await self._cancel(pacer)
             await asyncio.sleep(0)  # let the sweeper observe the stop flag
             await self._cancel(sweeper, timeout=2.0)
+            pools = [p for p in self._protocols if not isinstance(p, _QueryProtocol)]
             self._close_sockets()
+            for pool in pools:
+                await pool.wait_closed()
+            # A closed transport finishes closing on the loop's next turn; without it
+            # the loop can end first and leave the socket for the garbage collector.
+            await asyncio.sleep(0)
 
         self._expire_all(graceful=True)
         self.ended_at = time.time()
@@ -687,14 +711,19 @@ class DnsLoadEngine:
         now = time.time()
         sent_bytes = 0
         emitted = 0
-        capacity = self.config.max_inflight - self._inflight
+        budget = self.config.max_inflight - self._inflight
+        # A DoH pool can only take as many queries as it has idle connections.
+        room = protocol.room()
+        capacity = min(budget, room)
 
-        for _ in range(size):
+        for position in range(size):
             if capacity <= 0:
                 # Drops are a sender-side event and stay out of the error counters:
                 # a query that was never sent is not a query the appliance failed.
-                self.dropped += size - emitted
-                self.stats.on_drop(size - emitted)
+                self.dropped += size - position
+                self.stats.on_drop(size - position)
+                if room < budget:
+                    protocol.saturated(size - position)
                 break
             capacity -= 1
 
@@ -826,6 +855,19 @@ class DnsLoadEngine:
         """
         now = time.time()
         for qid in list(protocol.pending):
+            pending = protocol.pending.pop(qid, None)
+            if pending is None or pending.done:
+                continue
+            pending.done = True
+            self._inflight = max(0, self._inflight - 1)
+            self._finalize(pending, RCODE_ERROR, Outcome.ERROR.value, 0.0, "", 0, now)
+
+    def _fail_queries(self, protocol, qids: Sequence[int]) -> None:
+        """Queries a connection stranded when it closed, or that the server turned
+        away (a DoH error status): errors, attributed now rather than left to time
+        out.  The reason goes to the connection statistics."""
+        now = time.time()
+        for qid in qids:
             pending = protocol.pending.pop(qid, None)
             if pending is None or pending.done:
                 continue

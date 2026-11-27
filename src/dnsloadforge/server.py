@@ -227,6 +227,7 @@ class RunController:
         self.stats.set_run(
             state="idle",
             server=config.target,
+            transport=config.transport,
             target_name=config.target_name,
             mode=config.mode,
             personas=config.personas,
@@ -418,6 +419,7 @@ class RunController:
         self.stats.set_run(
             state="starting",
             server=config.target,
+            transport=config.transport,
             target_name=config.target_name,
             mode=config.mode,
             personas=config.personas,
@@ -683,7 +685,10 @@ class RunController:
                 return find_target(self.config.target_name, self.targets)
             except ValueError:
                 pass
-        return adhoc_target(self.config.server, self.config.port)
+        cfg = self.config
+        return adhoc_target(
+            cfg.server, cfg.port, transport=cfg.transport, tls_name=cfg.tls_name, doh_path=cfg.doh_path
+        )
 
     def start_checks(self, payload: dict | None = None) -> dict:
         """Run the deployment checks on a background thread.
@@ -724,7 +729,13 @@ class RunController:
         samples = []
         for category in ("block_malware", "block_phishing"):
             samples += self.catalogue.domains_for(category)[:3]
-        context = context_for_target(target, network=network, samples=samples)
+        context = context_for_target(
+            target,
+            network=network,
+            samples=samples,
+            verify=self.config.tls_verify,
+            ca_file=self.config.ca_file,
+        )
 
         def progress(check_id: str) -> None:
             with self._lock:
@@ -970,6 +981,9 @@ class _Handler(BaseHTTPRequestHandler):
             "server": cfg.server,
             "port": cfg.port,
             "target": cfg.target,
+            "transport": cfg.transport,
+            "tls_verify": cfg.tls_verify,
+            "connections": cfg.connections,
             "mode": cfg.mode,
             "personas": cfg.personas,
             "target_qps": cfg.target_qps,

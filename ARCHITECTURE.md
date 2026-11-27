@@ -18,6 +18,7 @@ src/dnsloadforge/
   sources.json       the data-driven source table
   profiles.py        the 10,000-worker office model (roles, mixes, hot sets, arrivals)
   engine.py          asyncio sender: pacing, bursts, in-flight budget, classification
+  transports.py      TCP, DoT and DoH: one-shot probes, and the connection pools a run sends through
   stats.py           aggregation, rolling windows, percentiles, findings, verdict
   server.py          stdlib HTTP + SSE dashboard, run/compare control, list jobs, request screening
   mockappliance.py   simulated filtering appliance, 8 scenarios, standalone CLI
@@ -32,7 +33,7 @@ scripts/
   Invoke-DnsLoadForge.ps1   PowerShell front end
   New-LabSourceIPs.ps1      create/remove the source-IP pool (elevated)
   Get-DnsLoadForgeCapture.ps1  pktmon wire capture + reconcile (elevated)
-tests/                     336 tests; no network required
+tests/                     369 tests; no network required
 runs/                      per-query record logs (gitignored)
 lists/cache/               fetched domain lists in a checkout (gitignored); a pip install uses
                            %LOCALAPPDATA%\dnsloadforge or ~/.cache/dnsloadforge instead
@@ -62,9 +63,9 @@ DomainCatalogue (9 weighted pools)
 profiles.PersonaModel (10,000 personas)
     |   roles, mixes, hot sets, DGA probes
     v
-engine.DnsLoadEngine  <--  Target.apply(RunConfig)  (scoring rules)
+engine.DnsLoadEngine  <--  Target.apply(RunConfig)  (scoring rules, transport)
     |
-    |   asyncio UDP queries
+    |   asyncio queries: a UDP socket, or a TCP / DoT / DoH connection pool
     v
 the target (appliance or public resolver)
     |
@@ -205,6 +206,38 @@ then rebuilds the catalogue from the cache and swaps it in atomically - a run ho
 own reference, so it never sees a half-built catalogue. Disabled sources are stored in
 `disabled.json` beside the cache, keeping `sources.json` read-only.
 
+### Every transport through one engine
+
+TCP, DNS over TLS and DNS over HTTPS reuse everything the UDP path has -- pacing,
+classification, the sweeper, the statistics -- because a connection pool in
+`transports.py` stands exactly where the UDP socket stood: the same `pending` table keyed
+by transaction ID, the same `transport.sendto(packet)`, the same `_handle_response`. The
+engine asks one new question, `room()`, before each burst, so a pool that is out of
+connections drops queries the way the in-flight budget does instead of queueing them.
+
+* **Connections open before the first query.** A handshake is set-up, not latency, and
+  counting it would make an encrypted transport look slower than it is.
+* **TCP and DoT pipeline and match by ID.** Quad9, Google and Cloudflare all answered a
+  pipelined batch out of order when it was checked, so nothing may assume order.
+* **DoH sends one request per connection at a time.** HTTP/1.1 answers strictly in order,
+  so a pipeline would let one slow lookup hold up the rest. A page load fires up to
+  `MAX_BURST` (24) lookups at once, so a pool starts with room for a whole burst and grows
+  when it runs short; four connections dropped a third of a 20-qps run against real DoH
+  services, every drop inside a burst.
+* **A close is not a failure.** Servers retire connections as a matter of course (idle
+  timeouts, recycling, `Connection: close`), and a resolver library re-sends what was
+  waiting, so the pool re-sends each stranded query once on another connection; the
+  query's latency keeps counting from its first send. A connection counts as lost only
+  when a close cost queries or came with an error, or when it stopped answering for twice
+  the timeout.
+* **HTTP/1.1 only.** HTTP/2 is not in the standard library. A service that insists on it
+  answers 505 (Quad9 does), which the preflight probe explains.
+* **The mock has no certificate.** The standard library cannot make one, and a key in the
+  repository would be a key in the repository, so the mock speaks TCP (on its UDP port,
+  as a real server does) and DoH over plain HTTP. The TLS layer was verified live against
+  Quad9, Google, Cloudflare and OpenDNS, and the code that is TLS-specific -- the context
+  and the wording of certificate errors -- is small and tested directly.
+
 ### Deployment checks are single queries with evidence
 
 `checks.py` is deliberately not part of the load path. Each check sends a handful of
@@ -302,6 +335,13 @@ non-finite number can never produce invalid JSON.
   the generator, not the appliance, is the bottleneck.
 * **A dead source list.** Every fetch is individually guarded; one retired URL cannot
   fail a run.
+* **A certificate this machine cannot check yet.** Windows downloads root certificates the
+  first time something needs one, and Python only sees roots already downloaded, so a
+  perfectly valid DoT or DoH server can fail verification on a fresh machine (it did, for
+  SSL.com and IdenTrust roots). The error says so and names the fix instead of reporting
+  a bare OpenSSL code.
+* **A server that hangs up mid-pipeline.** The queries it stranded are re-sent once and
+  then fail as errors at once, rather than waiting out the timeout.
 
 ## Extending it
 

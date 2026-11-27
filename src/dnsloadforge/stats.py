@@ -291,6 +291,9 @@ class StatsAggregator:
         self._signals: Counter[str] = Counter()
         self._ede: Counter[str] = Counter()
         self._nsids: Counter[str] = Counter()
+        #: The connection pool of a TCP, DoT or DoH run; ``None`` for UDP, which
+        #: has no connections to report.
+        self._connections: dict | None = None
         #: What each category is expected to do for the target under test.  Starts as
         #: the global default and is replaced per target via :meth:`set_expectations`.
         self._expect: dict[str, str] = dict(CATEGORY_EXPECTED)
@@ -570,6 +573,39 @@ class StatsAggregator:
             if self.in_flight > 0:
                 self.in_flight = max(0, self.in_flight - count)
 
+    def on_connection(
+        self,
+        *,
+        opened: int = 0,
+        closed: int = 0,
+        lost: int = 0,
+        failed: int = 0,
+        busy_drops: int = 0,
+        retried: int = 0,
+        error: str = "",
+    ) -> None:
+        """A connection event on a TCP, DoT or DoH run.  ``lost`` counts the closes
+        that cost queries or came with an error (also in ``closed``); ``failed``
+        the connections that could not be opened; ``retried`` the queries re-sent
+        after a connection closed under them; ``busy_drops`` the queries dropped
+        because every connection was busy, a sender-side limit like any other drop."""
+        with self._lock:
+            if self._connections is None:
+                self._connections = {
+                    "open": 0, "opened": 0, "closed": 0, "lost": 0, "failed": 0, "retried": 0, "busy_drops": 0,
+                    "last_error": "",
+                }
+            stats = self._connections
+            stats["opened"] += opened
+            stats["closed"] += closed
+            stats["open"] = max(0, stats["open"] + opened - closed)
+            stats["lost"] += lost
+            stats["failed"] += failed
+            stats["retried"] += retried
+            stats["busy_drops"] += busy_drops
+            if error:
+                stats["last_error"] = error
+
     # -- reading ------------------------------------------------------------
 
     def snapshot(self) -> dict:
@@ -750,6 +786,7 @@ class StatsAggregator:
                 for label, count in self._ede.most_common(12)
             ],
             "nsid": [{"id": ident, "count": count} for ident, count in self._nsids.most_common(10)],
+            **({"connections": dict(self._connections)} if self._connections is not None else {}),
             "verdict": self._verdict_locked(rcodes, outcomes),
         }
 

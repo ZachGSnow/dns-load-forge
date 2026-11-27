@@ -19,8 +19,9 @@ It is for the person who has to answer "is this DNS filtering product any good?"
 choosing between vendors, a network team accepting an appliance, anyone who has been told
 a filter "blocks threats" and would like to see it do it.
 
-* **Same traffic, any target.** Runs are seeded, so you can send identical traffic to
-  several filters in turn and read the results side by side.
+* **Same traffic, any target, any transport.** Runs are seeded, so you can send identical
+  traffic to several filters in turn, over UDP, TCP, DNS over TLS or DNS over HTTPS, and
+  read the results side by side.
 * **Scoring that fits the target.** A family-safe resolver is not marked down for letting
   ads through, and a public resolver is not marked down for not knowing `corp.local`.
 * **A live dashboard** built with Tailwind CSS and shadcn/ui: verdict, live charts, findings
@@ -118,6 +119,7 @@ to do, so each target carries its own scoring rules:
 | `kind` | `appliance` (a filter in front of your network: internal names such as `corp.local` must resolve) or `public` (a shared cloud resolver: NXDOMAIN for internal names is correct, and load above 100 qps needs `--allow-public-target`) |
 | `blocks` | the categories it should block. The others are still sent, because they are realistic traffic, but are reported and never judged. `[]` makes an unfiltered baseline. |
 | `sinkhole_ips`, `sinkhole_cidrs` | what "blocked" looks like for this target. OpenDNS, for example, answers a blocked name with an address on its block page rather than NXDOMAIN. |
+| `transport`, `tls_name`, `doh_path`, `ca_file` (or `url`) | how to reach it: see [Encrypted DNS and TCP](#encrypted-dns-and-tcp) |
 
 A few well-known public filters are built in (`python -m dnsloadforge targets`). They
 describe each service's published behaviour at the time of writing, so check them against
@@ -163,6 +165,50 @@ network, the targets and the day's threat feeds.)*
 * In the dashboard, tick two or more targets under **Compare targets** and press **Run
   comparison**. Every finished run, comparison or not, lands in the table, and **Export
   JSON** saves it.
+
+## Encrypted DNS and TCP
+
+A filter has to hold on every road a client takes to it. Browsers resolve over DNS over
+HTTPS, Android's Private DNS and Windows 11 over DNS over TLS, and large answers fall back
+to TCP, so the same office traffic can be sent over any of them:
+
+```bash
+python -m dnsloadforge --server 10.0.0.10 --transport tls        # DoT on 853, certificate checked
+python -m dnsloadforge --doh-url https://doh.lab.example/dns-query --server 10.0.0.10
+python -m dnsloadforge --target "Cloudflare Family" --target "Cloudflare Family over DoH" --qps 50 --duration 120
+```
+
+| Flag | Meaning |
+|---|---|
+| `--transport` | `udp` (default), `tcp`, `tls` (DNS over TLS, port 853) or `https` (DNS over HTTPS, port 443) |
+| `--doh-url` | a DoH endpoint as services publish it; `--server` pins the address, so finding the server does not depend on the DNS you are testing |
+| `--tls-name` | the name on the server's certificate, when `--server` is an address |
+| `--ca-file` | trust these CA certificates instead of the system's: an appliance with its own CA |
+| `--insecure` | skip the certificate check (still encrypted, but not authenticated) |
+| `--connections` | connections per thread: TCP and DoT default to 4; DoH sizes its pool to the rate and grows it |
+
+In `targets.json` the same settings are `transport`, `tls_name`, `doh_path` and
+`ca_file`, or `url` for a DoH endpoint. The presets include FamilyShield and Cloudflare
+Family over DoH, Cloudflare Family and Quad9 over DoT, and Google over DoH as an unfiltered
+baseline. Comparing a service with its encrypted variant shows whether encrypted DNS is
+filtered the same way and what it costs in latency.
+
+Connections are opened before the first query, so no handshake is counted as latency, and
+the dashboard shows the pool: connections opened and lost, queries re-sent, and any
+dropped because every connection was busy. TCP and DoT pipeline queries and match answers
+by ID; DoH sends one request at a time on each HTTP/1.1 keep-alive connection. A query left
+waiting when a server closes its connection is sent once more on another, as a resolver
+library would.
+
+* **HTTP/1.1 only.** HTTP/2 is not in Python's standard library. A service that insists on
+  it answers `505` (Quad9 does), and the preflight check says so; test it over DoT.
+* **On Windows, a root certificate may not be there yet.** Windows downloads root
+  certificates the first time something needs one, and Python only sees the ones already
+  downloaded. If a check fails with "does not lead to a root this machine trusts", open
+  `https://<host>/` once in a browser and run it again.
+* **The mock has no certificate.** `--mock --transport tls` rehearses DoT as TCP and
+  `--mock --transport https` rehearses DoH over plain HTTP; the TLS itself is exercised only
+  against a real server.
 
 ## Deployment checks
 
@@ -387,6 +433,11 @@ so you can see what a failing appliance looks like before you find one. Blocked 
 from the mock carry Extended DNS Error 15 (Blocked) like most current filters; the
 standalone mock takes `--block-ede CODE`, and `0` turns it off.
 
+Like a real server, the mock answers TCP on its UDP port. With `--mock` it also answers
+DNS over HTTPS (plain HTTP, on loopback), and the dashboard offers it three times, over
+UDP, TCP and DoH, so a comparison shows what each transport costs. The standalone mock
+takes `--doh-port PORT` for the same.
+
 ## Wire-side verification (optional)
 
 Sender-side statistics are exact about what was *sent*, but they cannot see packets
@@ -410,7 +461,7 @@ full 10,000 qps soak.
 python -m unittest discover -s tests -t tests -v
 ```
 
-336 tests, no network access required. The ones that matter most are the seven
+369 tests, no network access required. The ones that matter most are the seven
 end-to-end verdict scenarios in `tests/test_engine.py`, which drive real UDP at a real
 mock appliance and assert that an honest filter is reported as `filtering` **while** a
 passthrough, overblocking and lossy filter each produce a different, correct verdict.
@@ -423,6 +474,11 @@ The dashboard has its own checks in `web/` (`npm test`: number formatting and th
 contrast of every theme), and `tests/test_dashboard.py` pins what the packaged page
 promises: plain ASCII, no external requests, and a Content-Security-Policy whose hashes
 really admit its scripts.
+
+`tests/test_transports.py` runs the same verdicts over TCP and DoH against the mock, and
+against small servers that misbehave on purpose: one hangs up in the middle of a pipeline,
+another retires every connection after one answer. It also feeds the HTTP parser every
+response split at every byte.
 
 `tests/test_cli.py` covers the command surface and the safety guards, and exists
 because two bugs were only ever visible end to end: `serve --mock` silently ignored

@@ -1,5 +1,6 @@
 import { BlockSignalsCard } from "@/components/live/block-signals"
 import { OutcomesCard, RcodeCard } from "@/components/live/breakdowns"
+import { ConnectionsCard } from "@/components/live/connections"
 import { KpiCards } from "@/components/live/kpi-cards"
 import { LatencyCard } from "@/components/live/latency-card"
 import { RunSetup } from "@/components/live/run-setup"
@@ -22,6 +23,7 @@ export function LivePage() {
       <VerdictBanner snapshot={snapshot} />
       <RunSetup />
       <KpiCards snapshot={snapshot} />
+      <ConnectionsCard snapshot={snapshot} />
       <div className="grid gap-4 lg:grid-cols-3 lg:gap-6">
         <TrafficChart series={series} />
         <OutcomesCard snapshot={snapshot} />

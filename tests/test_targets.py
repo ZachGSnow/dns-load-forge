@@ -573,7 +573,7 @@ class TestCommandLineTargets(unittest.TestCase):
         args.mock = False
         _, chosen = cli.resolve_targets(args)
         config = cli.build_config(args, chosen[0])
-        with mock.patch.object(cli, "probe_reachable", return_value=True):
+        with mock.patch.object(cli, "probe_target", return_value=(True, "")):
             problems = cli.preflight(config, synthetic_catalogue(), args, chosen)
         self.assertGreaterEqual(sum("public resolver" in p for p in problems), 1)
 

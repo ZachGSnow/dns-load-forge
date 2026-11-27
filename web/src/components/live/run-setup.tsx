@@ -30,18 +30,28 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { TransportBadge } from "@/components/transport-badge"
 import { Separator } from "@/components/ui/separator"
 import { Spinner } from "@/components/ui/spinner"
 import { DEMO, DOWNLOADS } from "@/lib/api"
 import { fmtDuration, fmtInt, fmtRate, num } from "@/lib/format"
 import { useLive } from "@/lib/live"
 import type { Target } from "@/lib/schema"
+import { endpointOf } from "@/lib/transport"
 
 /** Above this rate a public resolver needs --allow-public-target (targets.py). */
 const PUBLIC_QPS_LIMIT = 100
 
-function address(target: Target): string {
-  return `${target.server}${num(target.port, 53) !== 53 ? `:${target.port}` : ""}`
+function TargetItem({ target }: { target: Target }) {
+  return (
+    <SelectItem value={target.name}>
+      {target.name}
+      <TransportBadge transport={target.transport} />
+      <span className="truncate font-mono text-xs text-muted-foreground">
+        {endpointOf(target)}
+      </span>
+    </SelectItem>
+  )
 }
 
 function Detail({
@@ -137,12 +147,7 @@ export function RunSetup() {
                   <SelectGroup>
                     <SelectLabel>Appliances</SelectLabel>
                     {appliances.map((t) => (
-                      <SelectItem key={t.name} value={t.name}>
-                        {t.name}
-                        <span className="font-mono text-xs text-muted-foreground">
-                          {address(t)}
-                        </span>
-                      </SelectItem>
+                      <TargetItem key={t.name} target={t} />
                     ))}
                   </SelectGroup>
                 ) : null}
@@ -150,12 +155,7 @@ export function RunSetup() {
                   <SelectGroup>
                     <SelectLabel>Public resolvers</SelectLabel>
                     {publics.map((t) => (
-                      <SelectItem key={t.name} value={t.name}>
-                        {t.name}
-                        <span className="font-mono text-xs text-muted-foreground">
-                          {address(t)}
-                        </span>
-                      </SelectItem>
+                      <TargetItem key={t.name} target={t} />
                     ))}
                   </SelectGroup>
                 ) : null}
@@ -229,7 +229,7 @@ export function RunSetup() {
             mono={false}
             value={info?.target_name || info?.server || "-"}
           />
-          <Detail label="Address" value={info?.server || "-"} />
+          <Detail label="Endpoint" value={info?.server || "-"} />
           <Detail
             label="Comparison"
             value={

@@ -48,6 +48,15 @@ Blocked answers carry an Extended DNS Error (15 "Blocked" by default), as most
 current filters send, and the mock names itself in an NSID option when a query
 asks for one.
 
+Transports
+----------
+Like a real server it answers on TCP as well as UDP, on the same port, with
+pipelined queries answered as each is ready.  With ``doh_port`` set it also
+answers DNS over HTTPS -- over plain HTTP, since the standard library cannot make
+a certificate -- so DoH framing and connection handling can be rehearsed and
+tested on loopback.  DoT is rehearsed as TCP for the same reason.  Over DoH a
+dropped query is answered ``503``, which is how an overloaded HTTP server says it.
+
 Decision order
 --------------
 Every query is classified in this order, and the order is deliberate:
@@ -63,16 +72,20 @@ Every query is classified in this order, and the order is deliberate:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import random
 import re
 import socket
+import struct
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
+from urllib.parse import parse_qs, urlsplit
 
 from .packets import (
     EDNS_NSID,
@@ -281,6 +294,10 @@ class MockApplianceConfig:
     #: weird responses (truncation, malformed bodies) without a new scenario.
     handle_query_fn: Callable[[DNSMessage], bytes | None] | None = None
     quiet: bool = False
+    #: Answer on TCP too, on the same port as UDP.
+    tcp: bool = True
+    #: Answer DNS over HTTPS (plain HTTP) on this port; 0 picks one, ``None`` is off.
+    doh_port: int | None = None
 
     def __post_init__(self) -> None:
         if self.scenario not in SCENARIOS:
@@ -351,6 +368,11 @@ class MockAppliance:
         self.config = config
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
+        self._tcp_sock: socket.socket | None = None
+        self._tcp_thread: threading.Thread | None = None
+        self._tcp_clients: set[socket.socket] = set()
+        self._http: _DohServer | None = None
+        self._http_thread: threading.Thread | None = None
         self._executor: ThreadPoolExecutor | None = None
         self._stop = threading.Event()
         self._port: int = config.port
@@ -377,8 +399,7 @@ class MockAppliance:
         if self._thread is not None and self._thread.is_alive():
             return self
         self._stop.clear()
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.bind((self.config.host, self.config.port))
+        self._sock, self._tcp_sock = self._bind()
         self._sock.settimeout(0.25)  # so stop() is responsive
         self._port = self._sock.getsockname()[1]
         self._executor = ThreadPoolExecutor(
@@ -388,22 +409,77 @@ class MockAppliance:
             target=self._serve, name="mockappliance", daemon=True
         )
         self._thread.start()
+        if self._tcp_sock is not None:
+            self._tcp_thread = threading.Thread(
+                target=self._serve_tcp, name="mockappliance-tcp", daemon=True
+            )
+            self._tcp_thread.start()
+        if self.config.doh_port is not None:
+            self._http = _DohServer((self.config.host, self.config.doh_port), self)
+            self._http_thread = threading.Thread(
+                target=self._http.serve_forever,
+                kwargs={"poll_interval": 0.25},
+                name="mockappliance-doh",
+                daemon=True,
+            )
+            self._http_thread.start()
         return self
+
+    def _bind(self) -> tuple[socket.socket, socket.socket | None]:
+        """UDP, and TCP on the same port number, as a real server listens.  With
+        an ephemeral port the pair is retried until both halves fit."""
+        for _attempt in range(20):
+            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp.bind((self.config.host, self.config.port))
+            if not self.config.tcp:
+                return udp, None
+            tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            if sys.platform != "win32":
+                # Lets a restarted mock rebind while old connections sit in
+                # TIME_WAIT.  Not on Windows, where it lets two sockets share a port.
+                tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                tcp.bind((self.config.host, udp.getsockname()[1]))
+                tcp.listen(128)
+            except OSError:
+                tcp.close()
+                udp.close()
+                if self.config.port:
+                    raise
+                continue
+            tcp.settimeout(0.25)
+            return udp, tcp
+        raise OSError("no free port number for both UDP and TCP")
 
     def stop(self) -> None:
         self._stop.set()
-        thread, self._thread = self._thread, None
-        if thread is not None:
-            thread.join(timeout=5.0)
+        http, self._http = self._http, None
+        if http is not None:
+            http.shutdown()
+            http.server_close()
+        with self._lock:
+            clients = list(self._tcp_clients)
+        for client in clients:
+            try:
+                client.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        for name in ("_thread", "_tcp_thread", "_http_thread"):
+            thread = getattr(self, name)
+            setattr(self, name, None)
+            if thread is not None:
+                thread.join(timeout=5.0)
         if self._executor is not None:
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
-        if self._sock is not None:
-            try:
-                self._sock.close()
-            except OSError:
-                pass
-            self._sock = None
+        for name in ("_sock", "_tcp_sock"):
+            sock = getattr(self, name)
+            setattr(self, name, None)
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
 
     def __enter__(self) -> "MockAppliance":
         return self.start()
@@ -430,6 +506,20 @@ class MockAppliance:
     def target(self) -> str:
         """``host:port`` of the live listener."""
         return f"{self.host}:{self.port}"
+
+    @property
+    def tcp_port(self) -> int | None:
+        """The TCP port (the UDP port number), or ``None`` without TCP."""
+        return self._port if self.config.tcp else None
+
+    @property
+    def doh_port(self) -> int | None:
+        """The DoH listener's port.  Meaningful only after ``start()``."""
+        return self._http.server_address[1] if self._http is not None else None
+
+    @property
+    def doh_url(self) -> str:
+        return f"http://{self.host}:{self.doh_port}/dns-query" if self._http is not None else ""
 
     @property
     def running(self) -> bool:
@@ -470,42 +560,112 @@ class MockAppliance:
                 self._bump(malformed=1)
 
     def _on_datagram(self, data: bytes, sender: tuple[str, int]) -> None:
+        self._handle(data, lambda packet: self._send(packet, sender))
+
+    def _answer(self, data: bytes) -> tuple[bytes | None, float] | None:
+        """The reply to one query and how long to wait before sending it.
+        ``None`` for a malformed query; a ``None`` reply for a deliberate drop."""
         self._bump(received=1)
         try:
             msg = decode_message(data)
         except DNSError:
             self._bump(malformed=1)
-            return
+            return None
         if not msg.qname:
             self._bump(malformed=1)
-            return
+            return None
 
         decision = self._decide(msg)
 
-        # Deliberate packet loss: return before sending.  The client sees only a
+        # Deliberate packet loss: no reply at all.  The client sees only a
         # timeout, which is exactly what overload looks like from a stub.
         if self.config.drop_rate and self._roll() < self.config.drop_rate:
             self._bump(dropped=1)
-            return
+            return None, 0.0
 
         delay_ms = self.config.latency_ms
         if self.config.jitter_ms:
             delay_ms += self._roll() * self.config.jitter_ms
+        return decision.packet, delay_ms / 1000.0
 
-        if delay_ms <= 0.0:
-            self._send(decision.packet, sender)
+    def _handle(self, data: bytes, reply: Callable[[bytes], None]) -> None:
+        """Answer one UDP or TCP query through ``reply``, after the simulated
+        latency.  Replies are delivered from a pool, so on TCP a slow answer does
+        not hold up the ones behind it."""
+        answer = self._answer(data)
+        if answer is None or answer[0] is None:
             return
-
+        packet, delay_s = answer
         executor = self._executor
-        if executor is None:
-            self._send(decision.packet, sender)
+        if delay_s <= 0.0 or executor is None:
+            reply(packet)
             return
-        executor.submit(self._deliver, decision.packet, sender, delay_ms / 1000.0)
+        executor.submit(self._deliver, reply, packet, delay_s)
 
-    def _deliver(self, packet: bytes, sender: tuple[str, int], delay_s: float) -> None:
+    def _deliver(self, reply: Callable[[bytes], None], packet: bytes, delay_s: float) -> None:
         if self._stop.wait(delay_s):
             return  # shutting down; do not bother sending
-        self._send(packet, sender)
+        reply(packet)
+
+    def _serve_tcp(self) -> None:
+        listener = self._tcp_sock
+        assert listener is not None
+        while not self._stop.is_set():
+            try:
+                conn, _addr = listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            with self._lock:
+                self._tcp_clients.add(conn)
+            threading.Thread(
+                target=self._tcp_client, args=(conn,), name="mockappliance-tcp-client", daemon=True
+            ).start()
+
+    def _tcp_client(self, conn: socket.socket) -> None:
+        """One TCP connection: length-prefixed queries, as many as the client
+        pipelines, each answered when it is ready (RFC 7766)."""
+        write_lock = threading.Lock()
+        buffer = bytearray()
+        conn.settimeout(0.25)
+
+        def reply(packet: bytes) -> None:
+            with write_lock:
+                try:
+                    conn.sendall(struct.pack("!H", len(packet)) + packet)
+                except OSError:
+                    return
+            self._bump(answered=1)
+
+        try:
+            while not self._stop.is_set():
+                try:
+                    data = conn.recv(65535)
+                except TimeoutError:
+                    continue
+                except OSError:
+                    break
+                if not data:
+                    break
+                buffer += data
+                while len(buffer) >= 2:
+                    length = (buffer[0] << 8) | buffer[1]
+                    if len(buffer) < 2 + length:
+                        break
+                    query = bytes(buffer[2 : 2 + length])
+                    del buffer[: 2 + length]
+                    try:
+                        self._handle(query, reply)
+                    except Exception:  # noqa: BLE001 - a mock must never crash the caller
+                        self._bump(malformed=1)
+        finally:
+            with self._lock:
+                self._tcp_clients.discard(conn)
+            try:
+                conn.close()
+            except OSError:
+                pass
 
     def _send(self, packet: bytes, sender: tuple[str, int]) -> None:
         sock = self._sock
@@ -721,6 +881,95 @@ class MockAppliance:
         return _Disposition(packet=packet, rcode=name)
 
 
+class _DohHandler(BaseHTTPRequestHandler):
+    """DNS over HTTPS (RFC 8484) for the mock, over plain HTTP: a POST with the
+    message as its body, or a GET with it base64url-encoded in ``?dns=``."""
+
+    protocol_version = "HTTP/1.1"
+    server_version = "DNSLoadForgeMock"
+    #: An idle keep-alive connection is closed after this; the client reopens it.
+    timeout = 30
+
+    server: "_DohServer"
+
+    def do_POST(self) -> None:  # noqa: N802 - stdlib signature
+        if urlsplit(self.path).path != "/dns-query":
+            self._reply(404, b"no DoH endpoint here", "text/plain")
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if not 0 < length <= 65535:
+            self.close_connection = True
+            self._reply(400, b"a DNS message is 1 to 65535 bytes", "text/plain")
+            return
+        body = self.rfile.read(length)
+        kind = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if kind != "application/dns-message":
+            self._reply(415, b"expected application/dns-message", "text/plain")
+            return
+        self._dns(body)
+
+    def do_GET(self) -> None:  # noqa: N802 - stdlib signature
+        parts = urlsplit(self.path)
+        if parts.path != "/dns-query":
+            self._reply(404, b"no DoH endpoint here", "text/plain")
+            return
+        value = parse_qs(parts.query).get("dns", [""])[0]
+        try:
+            body = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        except ValueError:
+            body = b""
+        if not body:
+            self._reply(400, b"expected ?dns= with a base64url DNS message", "text/plain")
+            return
+        self._dns(body)
+
+    def _dns(self, body: bytes) -> None:
+        appliance = self.server.appliance
+        try:
+            answer = appliance._answer(body)
+        except Exception:  # noqa: BLE001 - a mock must never crash the caller
+            appliance._bump(malformed=1)
+            answer = None
+        if answer is None:
+            self._reply(400, b"not a DNS query", "text/plain")
+            return
+        packet, delay_s = answer
+        if delay_s > 0 and appliance._stop.wait(delay_s):
+            self.close_connection = True
+            return
+        if packet is None:
+            self._reply(503, b"dropped by the mock appliance", "text/plain")
+            return
+        self._reply(200, packet, "application/dns-message")
+        appliance._bump(answered=1)
+
+    def _reply(self, status: int, body: bytes, kind: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", kind)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args) -> None:  # noqa: A002 - stdlib signature
+        pass  # a load test would fill the console
+
+
+class _DohServer(ThreadingHTTPServer):
+    daemon_threads = True
+    # Not on Windows, where SO_REUSEADDR lets a second socket take the port.
+    allow_reuse_address = sys.platform != "win32"
+
+    def __init__(self, address: tuple[str, int], appliance: MockAppliance) -> None:
+        self.appliance = appliance
+        super().__init__(address, _DohHandler)
+
+    def handle_error(self, request, client_address) -> None:
+        pass  # a client hanging up mid-request is normal at the end of a run
+
+
 # ---------------------------------------------------------------------------
 # Standalone CLI: python -m dnsloadforge.mockappliance --port 5353
 # ---------------------------------------------------------------------------
@@ -792,6 +1041,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rate-limit-qps", type=float, default=None)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument(
+        "--doh-port",
+        type=int,
+        default=None,
+        metavar="PORT",
+        help="also answer DNS over HTTPS, over plain HTTP, on this port (0 = any free port)",
+    )
+    parser.add_argument("--no-tcp", action="store_true", help="answer on UDP only")
+    parser.add_argument(
         "--quiet", action="store_true", help="do not print the periodic stats line"
     )
     return parser
@@ -827,17 +1084,21 @@ def main(argv: list[str] | None = None) -> int:
         block_ede=args.block_ede,
         seed=args.seed,
         quiet=args.quiet,
+        tcp=not args.no_tcp,
+        doh_port=args.doh_port,
         **{**preset, **overrides},
     )
 
     app = MockAppliance(config)
     app.start()
     print(
-        f"mock appliance listening on {app.target} "
+        f"mock appliance listening on {app.target} ({'UDP and TCP' if config.tcp else 'UDP'}) "
         f"[scenario={config.scenario} block_mode={config.block_mode} "
         f"blocklist={len(blocklist)} names]",
         flush=True,
     )
+    if app.doh_url:
+        print(f"DNS over HTTPS, plain HTTP: {app.doh_url}", flush=True)
     print("press Ctrl+C to stop", flush=True)
 
     last = app.stats

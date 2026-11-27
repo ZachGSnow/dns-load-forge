@@ -139,6 +139,22 @@ export interface Verdict {
   note?: string
 }
 
+/** The connection pool of a TCP, DoT or DoH run (absent for UDP). */
+export interface Connections {
+  open?: number
+  opened?: number
+  closed?: number
+  /** Closes that cost queries or came with an error. */
+  lost?: number
+  /** Connections that could not be opened. */
+  failed?: number
+  /** Queries sent again after a connection closed under them. */
+  retried?: number
+  /** Queries dropped because every connection was busy. */
+  busy_drops?: number
+  last_error?: string
+}
+
 export interface Snapshot {
   run?: RunInfo
   totals?: Totals
@@ -157,8 +173,12 @@ export interface Snapshot {
   block_signals?: Record<string, number>
   ede?: EdeRow[]
   nsid?: NsidRow[]
+  connections?: Connections
   verdict?: Verdict
 }
+
+/** udp, tcp, tls (DNS over TLS), https (DNS over HTTPS), http (DoH without TLS). */
+export type Transport = "udp" | "tcp" | "tls" | "https" | "http"
 
 export interface Target {
   name: string
@@ -170,6 +190,13 @@ export interface Target {
   sinkhole_cidrs?: string[]
   notes?: string
   builtin?: boolean
+  transport?: Transport
+  transport_label?: string
+  tls_name?: string
+  doh_path?: string
+  ca_file?: string
+  /** Where the traffic goes, as reports show it: "tls://dns.quad9.net:853 (9.9.9.9)". */
+  endpoint?: string
 }
 
 export interface TargetsPayload {
@@ -182,6 +209,7 @@ export interface HistoryRun {
   index: number
   target: string
   server?: string
+  transport?: Transport
   finished_at?: number
   seed?: number
   personas?: number
@@ -264,6 +292,9 @@ export interface ConfigPayload {
   server?: string
   port?: number
   target?: string
+  transport?: Transport
+  tls_verify?: boolean
+  connections?: number
   mode?: string
   personas?: number
   target_qps?: number
